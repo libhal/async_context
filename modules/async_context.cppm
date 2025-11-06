@@ -155,10 +155,10 @@ protected:
   friend class context;
 
   // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::pmr::memory_resource* m_resource = nullptr; // word 1
-  std::span<byte> m_stack{};                       // word 2-3
-  transition_handler m_handler;                    // word 4-7
-  release_function* m_release = nullptr;           // word 8
+  std::pmr::memory_resource* m_resource = nullptr;  // word 1
+  std::span<byte> m_stack{};                        // word 2-3
+  transition_handler m_handler;                     // word 4-7
+  release_function* m_release = nullptr;            // word 8
 };
 
 /**
@@ -175,7 +175,7 @@ struct bad_coroutine_alloc : std::bad_alloc
   {
   }
 
-  const char* what() const noexcept override
+  [[nodiscard]] char const* what() const noexcept override
   {
     return "An async::context ran out of memory!";
   }
@@ -207,8 +207,14 @@ public:
    */
   context() = default;
 
-  void unblock() { transition_to(blocked_by::nothing, default_timeout); }
-  void unblock_without_notification() { m_state = blocked_by::nothing; }
+  void unblock()
+  {
+    transition_to(blocked_by::nothing, default_timeout);
+  }
+  void unblock_without_notification()
+  {
+    m_state = blocked_by::nothing;
+  }
   void block_by_time(sleep_duration p_duration)
   {
     transition_to(blocked_by::time, p_duration);
@@ -235,7 +241,10 @@ public:
     return m_active_handle;
   }
 
-  [[nodiscard]] auto state() const { return std::get<1>(m_state); }
+  [[nodiscard]] auto state() const
+  {
+    return std::get<1>(m_state);
+  }
 
   constexpr void active_handle(std::coroutine_handle<> p_active_handle)
   {
@@ -249,11 +258,20 @@ public:
     }
   }
 
-  constexpr auto memory_used() { return m_stack_pointer; }
+  constexpr auto memory_used()
+  {
+    return m_stack_pointer;
+  }
 
-  constexpr auto capacity() { return m_stack.size(); }
+  constexpr auto capacity()
+  {
+    return m_stack.size();
+  }
 
-  constexpr auto memory_remaining() { return capacity() - memory_used(); }
+  constexpr auto memory_remaining()
+  {
+    return capacity() - memory_used();
+  }
 
 private:
   friend class promise_base;
@@ -289,7 +307,10 @@ private:
   {
   }
 
-  constexpr auto last_allocation_size() { return std::get<usize>(m_state); }
+  constexpr auto last_allocation_size()
+  {
+    return std::get<usize>(m_state);
+  }
 
   void transition_to(blocked_by p_new_state, sleep_duration p_info)
   {
@@ -309,23 +330,26 @@ private:
     return stack_address;
   }
 
-  constexpr void deallocate(std::size_t p_bytes) { m_stack_pointer -= p_bytes; }
+  constexpr void deallocate(std::size_t p_bytes)
+  {
+    m_stack_pointer -= p_bytes;
+  }
 
   void rethrow_if_exception_caught()
   {
     if (std::holds_alternative<std::exception_ptr>(m_state)) [[unlikely]] {
       auto const exception_ptr_copy = std::get<std::exception_ptr>(m_state);
-      m_state = 0uz; // destroy exception_ptr and set state to `usize`
+      m_state = 0uz;  // destroy exception_ptr and set state to `usize`
       std::rethrow_exception(exception_ptr_copy);
     }
   }
 
   // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine(); // word 1
-  runtime_base* m_manager = nullptr;                               // word 2
-  std::span<byte> m_stack{};                                       // word 3-4
-  usize m_stack_pointer = 0;                                       // word 5
-  std::variant<usize, blocked_by, std::exception_ptr> m_state;     // word 6-8
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
+  runtime_base* m_manager = nullptr;                                // word 2
+  std::span<byte> m_stack{};                                        // word 3-4
+  usize m_stack_pointer = 0;                                        // word 5
+  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 6-8
 };
 
 template<usize N>
@@ -333,8 +357,8 @@ class runtime;
 
 class context_lease
 {
-  context* m_context; // word 1
-  usize m_index;      // word 2
+  context* m_context;  // word 1
+  usize m_index;       // word 2
 
 public:
   template<usize N>
@@ -342,14 +366,23 @@ public:
 
   ~context_lease()
   {
-    if (m_context) { // Check if moved-from
+    if (m_context) {  // Check if moved-from
       m_context->m_manager->release_context(m_index);
     }
   }
 
-  context& get() { return *m_context; }
-  context& operator*() { return *m_context; }
-  context* operator->() { return m_context; }
+  context& get()
+  {
+    return *m_context;
+  }
+  context& operator*()
+  {
+    return *m_context;
+  }
+  context* operator->()
+  {
+    return m_context;
+  }
 
   // Move-only semantics
   context_lease(context_lease const&) = delete;
@@ -437,7 +470,10 @@ public:
     return m_contexts[p_index];
   }
 
-  context_lease lease(usize p_index) { return context_lease(*this, p_index); }
+  context_lease lease(usize p_index)
+  {
+    return context_lease(*this, p_index);
+  }
 
 private:
   constexpr void release(usize idx)
@@ -489,7 +525,7 @@ public:
   // For member functions - handles the implicit 'this' parameter
   template<typename Class, typename... Args>
   static constexpr void* operator new(std::size_t p_size,
-                                      Class&, // The 'this' object
+                                      Class&,  // The 'this' object
                                       context& p_context,
                                       Args&&...)
   {
@@ -497,9 +533,13 @@ public:
   }
 
   // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept {}
+  static constexpr void operator delete(void*) noexcept
+  {
+  }
 
-  static constexpr void operator delete(void*, std::size_t) noexcept {}
+  static constexpr void operator delete(void*, std::size_t) noexcept
+  {
+  }
 
   // Constructor for functions accepting no arguments
   promise_base(context& p_context)
@@ -528,7 +568,10 @@ public:
   {
   }
 
-  constexpr std::suspend_always initial_suspend() noexcept { return {}; }
+  constexpr std::suspend_always initial_suspend() noexcept
+  {
+    return {};
+  }
 
   template<typename Rep, typename Ratio>
   constexpr auto await_transform(
@@ -549,9 +592,15 @@ public:
     return static_cast<U&&>(p_awaitable);
   }
 
-  constexpr auto& context() { return *m_context; }
+  constexpr auto& context()
+  {
+    return *m_context;
+  }
 
-  constexpr auto continuation() { return m_continuation; }
+  constexpr auto continuation()
+  {
+    return m_continuation;
+  }
 
   constexpr void continuation(std::coroutine_handle<> p_continuation)
   {
@@ -577,14 +626,18 @@ template<typename T>
 class future_promise_type : public promise_base
 {
 public:
-  using promise_base::promise_base; // Inherit constructors
+  using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
   using our_handle = std::coroutine_handle<future_promise_type<T>>;
 
   // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept {}
+  static constexpr void operator delete(void*) noexcept
+  {
+  }
 
-  static constexpr void operator delete(void*, std::size_t) noexcept {}
+  static constexpr void operator delete(void*, std::size_t) noexcept
+  {
+  }
 
   void unhandled_exception() noexcept
   {
@@ -595,7 +648,10 @@ public:
 
   struct final_awaiter
   {
-    constexpr bool await_ready() noexcept { return false; }
+    constexpr bool await_ready() noexcept
+    {
+      return false;
+    }
 
     template<typename U>
     std::coroutine_handle<> await_suspend(
@@ -613,10 +669,15 @@ public:
       return p_self.promise().pop_active_coroutine();
     }
 
-    void await_resume() noexcept {}
+    void await_resume() noexcept
+    {
+    }
   };
 
-  constexpr final_awaiter final_suspend() noexcept { return {}; }
+  constexpr final_awaiter final_suspend() noexcept
+  {
+    return {};
+  }
 
   constexpr future<T> get_return_object() noexcept;
 
@@ -675,12 +736,19 @@ public:
 
   // Delete operators are defined as no-ops to ensure that these calls get
   // removed from the binary if inlined.
-  static constexpr void operator delete(void*) noexcept {}
-  static constexpr void operator delete(void*, std::size_t) noexcept {}
+  static constexpr void operator delete(void*) noexcept
+  {
+  }
+  static constexpr void operator delete(void*, std::size_t) noexcept
+  {
+  }
 
   struct final_awaiter
   {
-    constexpr bool await_ready() noexcept { return false; }
+    constexpr bool await_ready() noexcept
+    {
+      return false;
+    }
 
     std::coroutine_handle<> await_suspend(
       std::coroutine_handle<future_promise_type<void>> p_self) noexcept
@@ -697,10 +765,15 @@ public:
       return p_self.promise().pop_active_coroutine();
     }
 
-    constexpr void await_resume() noexcept {}
+    constexpr void await_resume() noexcept
+    {
+    }
   };
 
-  constexpr final_awaiter final_suspend() noexcept { return {}; }
+  constexpr final_awaiter final_suspend() noexcept
+  {
+    return {};
+  }
 
   void unhandled_exception() noexcept
   {
@@ -895,8 +968,7 @@ private:
 };
 
 template<typename T>
-constexpr future<T>
-future_promise_type<T>::get_return_object() noexcept
+constexpr future<T> future_promise_type<T>::get_return_object() noexcept
 {
   auto handle =
     std::coroutine_handle<future_promise_type<T>>::from_promise(*this);
@@ -922,4 +994,4 @@ future_promise_type<void>::get_return_object() noexcept
   m_context->m_state = blocked_by::nothing;
   return future<void>{ handle };
 }
-} // namespace async
+}  // namespace async
