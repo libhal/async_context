@@ -1,21 +1,38 @@
-#pragma once
+// Copyright 2024 - 2025 Khalil Estell and the libhal contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+module;
 
 #include <bitset>
 #include <chrono>
 #include <coroutine>
 #include <exception>
+#include <functional>
 #include <memory_resource>
 #include <numeric>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <variant>
 
-#include "../functional.hpp"
-#include "../initializers.hpp"
-#include "../units.hpp"
-#include "libhal/error.hpp"
+export module context;
 
-namespace hal::v5 {
+export namespace async {
+
+using u8 = std::uint8_t;
+using byte = std::uint8_t;
+using usize = std::size_t;
 
 enum class blocked_by : u8
 {
@@ -23,7 +40,7 @@ enum class blocked_by : u8
   nothing = 0,
   /// Blocked by an amount of time that must be waited before the task resumes.
   /// It is the responsibility of the scheduler to defer calling the active
-  /// coroutine of an `async_context` until the amount of time requested has
+  /// coroutine of an `context` until the amount of time requested has
   /// elapsed.
   ///
   /// The time duration passed to the transition handler function represents the
@@ -79,29 +96,36 @@ enum class blocked_by : u8
   outbox_full = 5,
 };
 
-class async_context;
+class context;
 
 template<typename T>
 using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 
-using async_transition_handler =
-  hal::callback<void(async_context&, blocked_by, hal::time_duration)>;
+/**
+ * @brief The data type for sleep time duration
+ *
+ */
+using sleep_duration = std::chrono::nanoseconds;
 
-class async_runtime_base
+// TODO(#9): Replace std::function with stdex::inplace_function
+using transition_handler =
+  std::function<void(context&, blocked_by, sleep_duration)>;
+
+class runtime_base
 {
 public:
-  ~async_runtime_base()
+  ~runtime_base()
   {
     if (m_resource) {
-      std::pmr::polymorphic_allocator<hal::byte>(m_resource)
-        .deallocate(m_buffer.data(), m_buffer.size());
+      std::pmr::polymorphic_allocator<byte>(m_resource)
+        .deallocate(m_stack.data(), m_stack.size());
     }
   }
 
-  async_runtime_base(async_runtime_base const&) = delete;
-  async_runtime_base& operator=(async_runtime_base const&) = delete;
-  async_runtime_base(async_runtime_base&&) = default;
-  async_runtime_base& operator=(async_runtime_base&&) = default;
+  runtime_base(runtime_base const&) = delete;
+  runtime_base& operator=(runtime_base const&) = delete;
+  runtime_base(runtime_base&&) = default;
+  runtime_base& operator=(runtime_base&&) = default;
 
   void release_context(usize idx)
   {
@@ -111,36 +135,69 @@ public:
   }
 
 protected:
-  using release_function = void(async_runtime_base*, usize);
+  using release_function = void(runtime_base*, usize);
 
-  explicit async_runtime_base(std::pmr::memory_resource& p_resource,
-                              hal::usize p_coroutine_stack_size,
-                              async_transition_handler p_handler,
-                              release_function* p_release_function)
+  explicit runtime_base(std::pmr::memory_resource& p_resource,
+                        usize p_coroutine_stack_size,
+                        transition_handler p_handler,
+                        release_function* p_release_function)
     : m_resource(&p_resource)
     , m_handler(std::move(p_handler))
     , m_release(p_release_function)
   {
-    m_buffer = std::span{
-      std::pmr::polymorphic_allocator<hal::byte>(m_resource)
+    m_stack = std::span{
+      std::pmr::polymorphic_allocator<byte>(m_resource)
         .allocate(p_coroutine_stack_size),
       p_coroutine_stack_size,
     };
   }
 
-  friend class async_context;
+  friend class context;
 
   // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::pmr::memory_resource* m_resource = nullptr;  // word 1
-  std::span<hal::byte> m_buffer{};                  // word 2-3
-  async_transition_handler m_handler;               // word 4-7
-  release_function* m_release = nullptr;            // word 8
+  std::pmr::memory_resource* m_resource = nullptr; // word 1
+  std::span<byte> m_stack{};                       // word 2-3
+  transition_handler m_handler;                    // word 4-7
+  release_function* m_release = nullptr;           // word 8
 };
 
-class async_context
+/**
+ * @brief Thrown when an async::context runs out of stack memory
+ *
+ * This occurs if a coroutine co_awaits a function and the coroutine promise
+ * cannot fit withint he context.
+ *
+ */
+struct bad_coroutine_alloc : std::bad_alloc
+{
+  bad_coroutine_alloc(context const* p_violator)
+    : violator(p_violator)
+  {
+  }
+
+  const char* what() const noexcept override
+  {
+    return "An async::context ran out of memory!";
+  }
+
+  /**
+   * @brief A pointer to a context that ran out of memory
+   *
+   * NOTE: This pointer must NOT be assumed to be valid when caught. The
+   * context could have been destroyed during propagation to the catch block.
+   * The address MUST be compared against a valid and living context to
+   * confirm they are the same. In the event the application can determine
+   * that the violator has the same address of another known valid context,
+   * then valid context should be accessed and NOT this pointer.
+   *
+   */
+  context const* violator;
+};
+
+class context
 {
 public:
-  static auto constexpr default_timeout = hal::time_duration(0);
+  static auto constexpr default_timeout = sleep_duration(0);
 
   /**
    * @brief Default construct a new async context object
@@ -148,33 +205,27 @@ public:
    * Using this async context on a coroutine will result in the allocation
    * throwing an exception.
    */
-  async_context() = default;
+  context() = default;
 
-  void unblock()
-  {
-    transition_to(blocked_by::nothing, default_timeout);
-  }
-  void unblock_without_notification()
-  {
-    m_state = blocked_by::nothing;
-  }
-  void block_by_time(hal::time_duration p_duration)
+  void unblock() { transition_to(blocked_by::nothing, default_timeout); }
+  void unblock_without_notification() { m_state = blocked_by::nothing; }
+  void block_by_time(sleep_duration p_duration)
   {
     transition_to(blocked_by::time, p_duration);
   }
-  void block_by_io(hal::time_duration p_duration = default_timeout)
+  void block_by_io(sleep_duration p_duration = default_timeout)
   {
     transition_to(blocked_by::io, p_duration);
   }
-  void block_by_sync(hal::time_duration p_duration = default_timeout)
+  void block_by_sync(sleep_duration p_duration = default_timeout)
   {
     transition_to(blocked_by::sync, p_duration);
   }
-  void block_by_inbox_empty(hal::time_duration p_duration = default_timeout)
+  void block_by_inbox_empty(sleep_duration p_duration = default_timeout)
   {
     transition_to(blocked_by::inbox_empty, p_duration);
   }
-  void block_by_outbox_full(hal::time_duration p_duration = default_timeout)
+  void block_by_outbox_full(sleep_duration p_duration = default_timeout)
   {
     transition_to(blocked_by::outbox_full, p_duration);
   }
@@ -184,10 +235,7 @@ public:
     return m_active_handle;
   }
 
-  [[nodiscard]] auto state() const
-  {
-    return std::get<1>(m_state);
-  }
+  [[nodiscard]] auto state() const { return std::get<1>(m_state); }
 
   constexpr void active_handle(std::coroutine_handle<> p_active_handle)
   {
@@ -201,34 +249,25 @@ public:
     }
   }
 
-  constexpr auto memory_used()
-  {
-    return m_stack_pointer;
-  }
+  constexpr auto memory_used() { return m_stack_pointer; }
 
-  constexpr auto capacity()
-  {
-    return m_buffer.size();
-  }
+  constexpr auto capacity() { return m_stack.size(); }
 
-  constexpr auto memory_remaining()
-  {
-    return capacity() - memory_used();
-  }
+  constexpr auto memory_remaining() { return capacity() - memory_used(); }
 
 private:
-  friend class async_promise_base;
+  friend class promise_base;
 
   template<typename>
-  friend class async_promise_type;
+  friend class future_promise_type;
 
   template<typename>
   friend class future;
 
-  friend class async_runtime_base;
+  friend class runtime_base;
 
   template<usize N>
-  friend class async_runtime;
+  friend class runtime;
 
   friend class context_lease;
 
@@ -239,24 +278,20 @@ private:
    * transition handler should be written for child async context objects.
    *
    * @param p_buffer A pointer to this context's portion of a parent
-   * async_context's coroutine stack
+   * context's coroutine stack
    * @param p_coroutine_stack_size - the size of the portion of the parent
-   * async_context's coroutine stack
+   * context's coroutine stack
    * @param p_handler - handler for this async context
    */
-  explicit async_context(async_runtime_base& p_manager,
-                         std::span<hal::byte> p_buffer)
+  explicit context(runtime_base& p_manager, std::span<byte> p_buffer)
     : m_manager(&p_manager)
-    , m_buffer(p_buffer)
+    , m_stack(p_buffer)
   {
   }
 
-  constexpr auto last_allocation_size()
-  {
-    return std::get<usize>(m_state);
-  }
+  constexpr auto last_allocation_size() { return std::get<usize>(m_state); }
 
-  void transition_to(blocked_by p_new_state, hal::time_duration p_info)
+  void transition_to(blocked_by p_new_state, sleep_duration p_info)
   {
     m_state = p_new_state;
     m_manager->m_handler(*this, p_new_state, p_info);
@@ -265,68 +300,56 @@ private:
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
     auto const new_stack_pointer = m_stack_pointer + p_bytes;
-    if (new_stack_pointer > m_buffer.size()) [[unlikely]] {
-      hal::safe_throw(hal::bad_coroutine_alloc(this));
+    if (new_stack_pointer > m_stack.size()) [[unlikely]] {
+      throw bad_coroutine_alloc(this);
     }
     m_state = p_bytes;
-    auto* const stack_address = &m_buffer[m_stack_pointer];
+    auto* const stack_address = &m_stack[m_stack_pointer];
     m_stack_pointer = new_stack_pointer;
     return stack_address;
   }
 
-  constexpr void deallocate(std::size_t p_bytes)
-  {
-    m_stack_pointer -= p_bytes;
-  }
+  constexpr void deallocate(std::size_t p_bytes) { m_stack_pointer -= p_bytes; }
 
   void rethrow_if_exception_caught()
   {
     if (std::holds_alternative<std::exception_ptr>(m_state)) [[unlikely]] {
       auto const exception_ptr_copy = std::get<std::exception_ptr>(m_state);
-      m_state = 0uz;  // destroy exception_ptr and set state to `usize`
+      m_state = 0uz; // destroy exception_ptr and set state to `usize`
       std::rethrow_exception(exception_ptr_copy);
     }
   }
 
   // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  async_runtime_base* m_manager = nullptr;                          // word 2
-  std::span<hal::byte> m_buffer{};                                  // word 3-4
-  usize m_stack_pointer = 0;                                        // word 5
-  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 6-8
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine(); // word 1
+  runtime_base* m_manager = nullptr;                               // word 2
+  std::span<byte> m_stack{};                                       // word 3-4
+  usize m_stack_pointer = 0;                                       // word 5
+  std::variant<usize, blocked_by, std::exception_ptr> m_state;     // word 6-8
 };
 
 template<usize N>
-class async_runtime;
+class runtime;
 
 class context_lease
 {
-  async_context* m_context;  // word 1
-  usize m_index;             // word 2
+  context* m_context; // word 1
+  usize m_index;      // word 2
 
 public:
   template<usize N>
-  context_lease(async_runtime<N>& p_runtime, usize p_index);
+  context_lease(runtime<N>& p_runtime, usize p_index);
 
   ~context_lease()
   {
-    if (m_context) {  // Check if moved-from
+    if (m_context) { // Check if moved-from
       m_context->m_manager->release_context(m_index);
     }
   }
 
-  async_context& get()
-  {
-    return *m_context;
-  }
-  async_context& operator*()
-  {
-    return *m_context;
-  }
-  async_context* operator->()
-  {
-    return m_context;
-  }
+  context& get() { return *m_context; }
+  context& operator*() { return *m_context; }
+  context* operator->() { return m_context; }
 
   // Move-only semantics
   context_lease(context_lease const&) = delete;
@@ -352,62 +375,61 @@ public:
 };
 
 template<usize context_count = 1>
-class async_runtime : public async_runtime_base
+class runtime : public runtime_base
 {
 public:
   static_assert(context_count >= 1);
 
   // Constructor with individual sizes
-  async_runtime(std::pmr::memory_resource& p_resource,
-                std::array<usize, context_count> const& p_stack_sizes,
-                async_transition_handler p_handler)
-    : async_runtime_base(
+  runtime(std::pmr::memory_resource& p_resource,
+          std::array<usize, context_count> const& p_stack_sizes,
+          transition_handler p_handler)
+    : runtime_base(
         p_resource,
         std::accumulate(p_stack_sizes.begin(), p_stack_sizes.end(), 0uz),
         p_handler,
-        &async_runtime<context_count>::static_release)
+        &runtime<context_count>::static_release)
   {
     // Partition buffer and construct contexts
     usize offset = 0;
     for (usize i = 0; i < context_count; ++i) {
-      m_contexts[i] =
-        async_context(*this, m_buffer.subspan(offset, p_stack_sizes[i]));
+      m_contexts[i] = context(*this, m_stack.subspan(offset, p_stack_sizes[i]));
       offset += p_stack_sizes[i];
     }
   }
 
   // Constructor with equal sizes
-  async_runtime(std::pmr::memory_resource& resource,
-                usize p_stack_size_per_context,
-                async_transition_handler handler)
-    : async_runtime(resource, make_array(p_stack_size_per_context), handler)
+  runtime(std::pmr::memory_resource& resource,
+          usize p_stack_size_per_context,
+          transition_handler handler)
+    : runtime(resource, make_array(p_stack_size_per_context), handler)
   {
   }
 
-  async_runtime(async_runtime const&) = delete;
-  async_runtime& operator=(async_runtime const&) = delete;
-  // Move constructor is deleted to prevent invalidation of async_context. Each
+  runtime(runtime const&) = delete;
+  runtime& operator=(runtime const&) = delete;
+  // Move constructor is deleted to prevent invalidation of context. Each
   // has a pointer to this object which is being relocated.
-  async_runtime(async_runtime&&) = delete;
-  async_runtime& operator=(async_runtime&&) = delete;
+  runtime(runtime&&) = delete;
+  runtime& operator=(runtime&&) = delete;
 
   /**
-   * @brief Lease access to an async_context
+   * @brief Lease access to an context
    *
    * @param p_index - which async context to use.
-   * @return async_context&
+   * @return context&
    */
-  async_context& operator[](usize p_index)
+  context& operator[](usize p_index)
   {
     if (p_index >= context_count) {
-      hal::safe_throw(hal::out_of_range(this,
-                                        {
-                                          .m_index = p_index,
-                                          .m_capacity = context_count,
-                                        }));
+      safe_throw(out_of_range(this,
+                              {
+                                .m_index = p_index,
+                                .m_capacity = context_count,
+                              }));
     }
     if (m_busy[p_index]) {
-      hal::safe_throw(hal::device_or_resource_busy(this));
+      safe_throw(device_or_resource_busy(this));
     }
 
     m_busy[p_index] = true;
@@ -415,10 +437,7 @@ public:
     return m_contexts[p_index];
   }
 
-  context_lease lease(usize p_index)
-  {
-    return context_lease(*this, p_index);
-  }
+  context_lease lease(usize p_index) { return context_lease(*this, p_index); }
 
 private:
   constexpr void release(usize idx)
@@ -435,38 +454,33 @@ private:
     return result;
   }
 
-  static void static_release(async_runtime_base* p_base, usize p_index)
+  static void static_release(runtime_base* p_base, usize p_index)
   {
     // Cast back to this type and call release
-    static_cast<async_runtime<context_count>*>(p_base)->release(p_index);
+    static_cast<runtime<context_count>*>(p_base)->release(p_index);
   }
 
   std::bitset<context_count> m_busy;
-  std::array<async_context, context_count> m_contexts;
+  std::array<context, context_count> m_contexts;
 };
 
 template<usize N>
-context_lease::context_lease(async_runtime<N>& p_runtime, usize p_index)
+context_lease::context_lease(runtime<N>& p_runtime, usize p_index)
   : m_context(&p_runtime[p_index])
   , m_index(p_index)
 {
 }
 
-auto constexpr async_transition_handler_size = sizeof(async_transition_handler);
-auto constexpr async_manager = sizeof(async_runtime_base);
-auto constexpr async_context_size = sizeof(async_context);
-auto constexpr sizeof_std_exception_ptr = sizeof(std::exception_ptr);
-
 struct pop_active_coroutine_directly
 {};
 
-class async_promise_base
+class promise_base
 {
 public:
   // For regular functions
   template<typename... Args>
   static constexpr void* operator new(std::size_t p_size,
-                                      async_context& p_context,
+                                      context& p_context,
                                       Args&&...)
   {
     return p_context.allocate(p_size);
@@ -475,59 +489,52 @@ public:
   // For member functions - handles the implicit 'this' parameter
   template<typename Class, typename... Args>
   static constexpr void* operator new(std::size_t p_size,
-                                      Class&,  // The 'this' object
-                                      async_context& p_context,
+                                      Class&, // The 'this' object
+                                      context& p_context,
                                       Args&&...)
   {
     return p_context.allocate(p_size);
   }
 
   // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept
-  {
-  }
+  static constexpr void operator delete(void*) noexcept {}
 
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
-  }
+  static constexpr void operator delete(void*, std::size_t) noexcept {}
 
   // Constructor for functions accepting no arguments
-  async_promise_base(async_context& p_context)
+  promise_base(context& p_context)
     : m_context(&p_context)
   {
   }
 
   // Constructor for functions accepting arguments
   template<typename... Args>
-  async_promise_base(async_context& p_context, Args&&...)
+  promise_base(context& p_context, Args&&...)
     : m_context(&p_context)
   {
   }
 
   // Constructor for member functions (handles 'this' parameter)
   template<typename Class>
-  async_promise_base(Class&, async_context& p_context)
+  promise_base(Class&, context& p_context)
     : m_context(&p_context)
   {
   }
 
   // Constructor for member functions with additional parameters
   template<typename Class, typename... Args>
-  async_promise_base(Class&, async_context& p_context, Args&&...)
+  promise_base(Class&, context& p_context, Args&&...)
     : m_context(&p_context)
   {
   }
 
-  constexpr std::suspend_always initial_suspend() noexcept
-  {
-    return {};
-  }
+  constexpr std::suspend_always initial_suspend() noexcept { return {}; }
 
   template<typename Rep, typename Ratio>
   constexpr auto await_transform(
-    std::chrono::duration<Rep, Ratio> p_time_duration) noexcept
+    std::chrono::duration<Rep, Ratio> p_sleep_duration) noexcept
   {
-    m_context->block_by_time(p_time_duration);
+    m_context->block_by_time(p_sleep_duration);
     return std::suspend_always{};
   }
 
@@ -542,15 +549,9 @@ public:
     return static_cast<U&&>(p_awaitable);
   }
 
-  constexpr auto& context()
-  {
-    return *m_context;
-  }
+  constexpr auto& context() { return *m_context; }
 
-  constexpr auto continuation()
-  {
-    return m_continuation;
-  }
+  constexpr auto continuation() { return m_continuation; }
 
   constexpr void continuation(std::coroutine_handle<> p_continuation)
   {
@@ -566,28 +567,24 @@ public:
 protected:
   // Storage for the coroutine result/error
   std::coroutine_handle<> m_continuation = std::noop_coroutine();
-  async_context* m_context;
+  class context* m_context;
 };
 
 template<typename T>
 class future;
 
 template<typename T>
-class async_promise_type : public async_promise_base
+class future_promise_type : public promise_base
 {
 public:
-  using async_promise_base::async_promise_base;  // Inherit constructors
-  using async_promise_base::operator new;
-  using our_handle = std::coroutine_handle<async_promise_type<T>>;
+  using promise_base::promise_base; // Inherit constructors
+  using promise_base::operator new;
+  using our_handle = std::coroutine_handle<future_promise_type<T>>;
 
   // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept
-  {
-  }
+  static constexpr void operator delete(void*) noexcept {}
 
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
-  }
+  static constexpr void operator delete(void*, std::size_t) noexcept {}
 
   void unhandled_exception() noexcept
   {
@@ -598,14 +595,11 @@ public:
 
   struct final_awaiter
   {
-    constexpr bool await_ready() noexcept
-    {
-      return false;
-    }
+    constexpr bool await_ready() noexcept { return false; }
 
     template<typename U>
     std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<async_promise_type<U>> p_self) noexcept
+      std::coroutine_handle<future_promise_type<U>> p_self) noexcept
     {
       // The coroutine is now suspended at the final-suspend point.
       // Lookup its continuation in the promise and resume it symmetrically.
@@ -619,15 +613,10 @@ public:
       return p_self.promise().pop_active_coroutine();
     }
 
-    void await_resume() noexcept
-    {
-    }
+    void await_resume() noexcept {}
   };
 
-  constexpr final_awaiter final_suspend() noexcept
-  {
-    return {};
-  }
+  constexpr final_awaiter final_suspend() noexcept { return {}; }
 
   constexpr future<T> get_return_object() noexcept;
 
@@ -654,21 +643,21 @@ public:
   }
 
 private:
-  std::variant<monostate_or<T>, std::coroutine_handle<async_promise_type<T>>>*
+  std::variant<monostate_or<T>, std::coroutine_handle<future_promise_type<T>>>*
     m_value_address;
-  hal::usize m_frame_size;
+  usize m_frame_size;
 };
 
 template<>
-class async_promise_type<void> : public async_promise_base
+class future_promise_type<void> : public promise_base
 {
 public:
   // Inherit constructors & operator new
-  using async_promise_base::async_promise_base;
-  using async_promise_base::operator new;
-  using our_handle = std::coroutine_handle<async_promise_type<void>>;
+  using promise_base::promise_base;
+  using promise_base::operator new;
+  using our_handle = std::coroutine_handle<future_promise_type<void>>;
 
-  async_promise_type();
+  future_promise_type();
 
   void set_object_address(
     std::variant<monostate_or<void>, our_handle>* p_value_address)
@@ -686,22 +675,15 @@ public:
 
   // Delete operators are defined as no-ops to ensure that these calls get
   // removed from the binary if inlined.
-  static constexpr void operator delete(void*) noexcept
-  {
-  }
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
-  }
+  static constexpr void operator delete(void*) noexcept {}
+  static constexpr void operator delete(void*, std::size_t) noexcept {}
 
   struct final_awaiter
   {
-    constexpr bool await_ready() noexcept
-    {
-      return false;
-    }
+    constexpr bool await_ready() noexcept { return false; }
 
     std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<async_promise_type<void>> p_self) noexcept
+      std::coroutine_handle<future_promise_type<void>> p_self) noexcept
     {
       // The coroutine is now suspended at the final-suspend point.
       // Lookup its continuation in the promise and resume it symmetrically.
@@ -715,15 +697,10 @@ public:
       return p_self.promise().pop_active_coroutine();
     }
 
-    constexpr void await_resume() noexcept
-    {
-    }
+    constexpr void await_resume() noexcept {}
   };
 
-  constexpr final_awaiter final_suspend() noexcept
-  {
-    return {};
-  }
+  constexpr final_awaiter final_suspend() noexcept { return {}; }
 
   void unhandled_exception() noexcept
   {
@@ -740,14 +717,14 @@ public:
 
 private:
   std::variant<monostate_or<void>, our_handle>* m_value_address = nullptr;
-  hal::usize m_frame_size = 0;
+  usize m_frame_size = 0;
 };
 
 template<typename T>
 class future
 {
 public:
-  using promise_type = async_promise_type<T>;
+  using promise_type = future_promise_type<T>;
   friend promise_type;
   using task_handle_type = std::coroutine_handle<promise_type>;
 
@@ -789,16 +766,16 @@ public:
   // Awaiter for when this task is awaited
   struct awaiter
   {
-    future<T>* m_async_operation;
+    future<T>* m_operation;
 
-    constexpr explicit awaiter(future<T>* p_async_operation) noexcept
-      : m_async_operation(p_async_operation)
+    constexpr explicit awaiter(future<T>* p_operation) noexcept
+      : m_operation(p_operation)
     {
     }
 
     [[nodiscard]] constexpr bool await_ready() const noexcept
     {
-      return m_async_operation->done();
+      return m_operation->done();
     }
 
     // Generic await_suspend for any promise type
@@ -806,8 +783,8 @@ public:
     std::coroutine_handle<> await_suspend(
       std::coroutine_handle<Promise> p_continuation) noexcept
     {
-      m_async_operation->handle().promise().continuation(p_continuation);
-      return m_async_operation->handle();
+      m_operation->handle().promise().continuation(p_continuation);
+      return m_operation->handle();
     }
 
     constexpr monostate_or<T>& await_resume() const
@@ -815,17 +792,17 @@ public:
       // If the async object is being resumed and it has not destroyed itself
       // and been replaced with the result value, then there MUST be an
       // exception that needs to be propagated through the calling coroutine.
-      if (std::holds_alternative<task_handle_type>(m_async_operation->m_result))
+      if (std::holds_alternative<task_handle_type>(m_operation->m_result))
         [[unlikely]] {
-        auto& context = m_async_operation->handle().promise().context();
+        auto& context = m_operation->handle().promise().context();
 
         context.rethrow_if_exception_caught();
 
         /// NOTE: If this await_resume() is called via `co_await`, then the
-        /// resources of the call will be cleaned up when then hal::future is
+        /// resources of the call will be cleaned up when then future is
         /// destroyed.
       }
-      return m_async_operation->result();
+      return m_operation->result();
     }
   };
 
@@ -899,7 +876,7 @@ public:
     return std::get<task_handle_type>(m_result);
   }
 
-  void set_context(async_context& p_context)
+  void set_context(context& p_context)
   {
     handle().promise().context() = p_context;
   }
@@ -918,10 +895,11 @@ private:
 };
 
 template<typename T>
-constexpr future<T> async_promise_type<T>::get_return_object() noexcept
+constexpr future<T>
+future_promise_type<T>::get_return_object() noexcept
 {
   auto handle =
-    std::coroutine_handle<async_promise_type<T>>::from_promise(*this);
+    std::coroutine_handle<future_promise_type<T>>::from_promise(*this);
   m_context->active_handle(handle);
   // Copy the last allocation size before changing the representation of
   // m_state to 'blocked_by::nothing'.
@@ -932,10 +910,10 @@ constexpr future<T> async_promise_type<T>::get_return_object() noexcept
 }
 
 inline constexpr future<void>
-async_promise_type<void>::get_return_object() noexcept
+future_promise_type<void>::get_return_object() noexcept
 {
   auto handle =
-    std::coroutine_handle<async_promise_type<void>>::from_promise(*this);
+    std::coroutine_handle<future_promise_type<void>>::from_promise(*this);
   m_context->active_handle(handle);
   // Copy the last allocation size before changing the representation of
   // m_state to 'blocked_by::nothing'.
@@ -944,4 +922,4 @@ async_promise_type<void>::get_return_object() noexcept
   m_context->m_state = blocked_by::nothing;
   return future<void>{ handle };
 }
-}  // namespace hal::v5
+} // namespace async
