@@ -31,6 +31,10 @@ target_sources(async_context PUBLIC
 
     FILES
     modules/async_context.cppm
+    modules/future.cppm
+    modules/context.cppm
+    modules/types.cppm
+    modules/promise_base.cppm
 )
 
 install(
