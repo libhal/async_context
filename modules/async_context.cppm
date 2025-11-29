@@ -668,7 +668,7 @@ public:
       // exception that needs to be propagated through the calling coroutine.
       if (std::holds_alternative<task_handle_type>(m_operation->m_result))
         [[unlikely]] {
-        auto& context = m_operation->handle().promise().context();
+        auto& context = m_operation->handle().promise().get_context();
 
         context.rethrow_if_exception_caught();
 
@@ -693,7 +693,7 @@ public:
 
     // Check if our awaiter is not ready and if so, run it until it finishes
     if (not manual_awaiter.await_ready()) {
-      auto& context = handle().promise().context();
+      auto& context = handle().promise().get_context();
       context.sync_wait();
     }
 
