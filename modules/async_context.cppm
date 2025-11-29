@@ -388,7 +388,7 @@ public:
     return static_cast<U&&>(p_awaitable);
   }
 
-  constexpr auto& context()
+  constexpr auto& get_context()
   {
     return *m_context;
   }

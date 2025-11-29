@@ -60,21 +60,20 @@ install(
 
 find_package(ut REQUIRED)
 
-add_executable(async_unit_test)
-
-# Add module files
-target_sources(async_unit_test
-  PRIVATE
-      tests/main.test.cpp
-      tests/async.test.cpp
-)
-
-target_compile_features(async_unit_test PUBLIC cxx_std_23)
-target_link_libraries(async_unit_test PRIVATE async_context boost-ext-ut::ut)
-
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    add_executable(async_unit_test)
+    # Add module files
+    target_sources(async_unit_test
+    PRIVATE
+        tests/main.test.cpp
+        tests/async.test.cpp
+    )
+
+    target_compile_features(async_unit_test PUBLIC cxx_std_23)
+    target_link_libraries(async_unit_test PRIVATE async_context boost-ext-ut::ut)
+
     message(STATUS "Executing unit tests!")
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
 endif()
