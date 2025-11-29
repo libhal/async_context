@@ -33,7 +33,7 @@ class async_context_conan(ConanFile):
     description = ("Implementation of C++20 coroutines targeting embedded system by eliminating the usage of the global heap and providing a 'context' which contains a coroutine stack frame and other useful utilities for scheduling.")
     topics = ("async", "coroutines", "stack", "scheduling", "scheduler")
     settings = "compiler", "build_type", "os", "arch"
-    exports_sources = "include/*", "tests/*", "CMakeLists.txt", "LICENSE"
+    exports_sources = "modules/*", "tests/*", "CMakeLists.txt", "LICENSE"
     package_type = "static-library"
     shared = False
 
