@@ -113,27 +113,68 @@ using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
  */
 using sleep_duration = std::chrono::nanoseconds;
 
-// TODO(#9): Replace std::function with stdex::inplace_function
-class transition_handler = std::function<
-  void(context&, blocked_by, std::variant<sleep_duration, context*>)>;
+/**
+ * @brief
+ *
+ */
+class scheduler
+{
+public:
+  /**
+   * @brief
+   *
+   * It is up to the scheduler to ensure that concurrent calls to this API are
+   * serialized appropriately. For a single threaded event loop, syncronization
+   * and serialization is not necessary. For a thread pool implementation,
+   * syncronization nd serialization must be considered.
+   *
+   * @param p_context - the context that is requested to be scheduled
+   * @param p_block_state - the type of blocking event the context has
+   * encountered.
+   * @param p_block_info - Information about what exactly is blocking this
+   * context. If p_block_info is a sleep_duration, and the p_block_state is
+   * blocked_by::time, then this context is requesting to be scheduled at that
+   * or a later time. If the p_block_info is a sleep_duration, and the block
+   * state isn't blocked_by::time, then this sleep duration is a hint to the
+   * scheduler to when it would be appropriate to reschedule this context. The
+   * scheduler does not have to be abided by this. If p_block_info is a pointer
+   * to a context, then the pointed to context is currently blocking p_context.
+   * This can be used to determine when to schedule p_context again, but does
+   * not have to be abided by for proper function.
+   */
+  void schedule(context& p_context,
+                blocked_by p_block_state,
+                std::variant<sleep_duration, context*> p_block_info)
+  {
+    return schedule(p_context, p_block_state, p_block_info);
+  }
+
+private:
+  virtual void do_schedule(
+    context& p_context,
+    blocked_by p_block_state,
+    std::variant<sleep_duration, context*> p_block_info) = 0;
+};
 
 class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
 
+  // TODO(#18): Replace `mem::strong_ptr<std::span<byte>>` stack memory type
+  // with something thats easier and safer to work with.
   /**
    * @brief Construct a new context object
    *
-   * @param p_transition_handler - a pointer to a transition handler that
+   * @param p_scheduler - a pointer to a transition handler that
    * handles transitions in blocked_by state.
    * @param p_stack_memory - span to a block of memory reserved for this context
    * to be used as stack memory for coroutine persistent memory. This buffer
    * must outlive the lifetime of this object.
    */
-  context(mem::strong_ptr<transition_handler> const& p_transition_handler,
+  context(mem::strong_ptr<scheduler> const& p_scheduler,
           mem::strong_ptr<std::span<byte>> const& p_stack_memory)
-    : m_transition_handler(p_transition_handler)
+    : m_scheduler(p_scheduler)
     , m_stack(p_stack_memory)
   {
   }
@@ -213,7 +254,7 @@ public:
   void transition_to(blocked_by p_new_state, sleep_duration p_info)
   {
     m_state = p_new_state;
-    (*m_transition_handler)(*this, p_new_state, p_info);
+    m_scheduler->schedule(*this, p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
@@ -243,7 +284,7 @@ private:
 
   // Should stay within a standard cache-line of 64 bytes (8 words)
   std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  mem::strong_ptr<transition_handler> m_transition_handler;         // word 2-3
+  mem::strong_ptr<scheduler> m_scheduler;                           // word 2-3
   mem::strong_ptr<std::span<byte>> m_stack;                         // word 4-5
   usize m_stack_index = 0;                                          // word 6
   std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 7-8
