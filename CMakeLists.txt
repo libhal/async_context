@@ -16,6 +16,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 project(async_context LANGUAGES CXX)
 
@@ -23,18 +24,17 @@ project(async_context LANGUAGES CXX)
 # Library
 # ==============================================================================
 
+find_package(strong_ptr REQUIRED)
+
 add_library(async_context STATIC)
 target_compile_features(async_context PUBLIC cxx_std_23)
+target_link_libraries(async_context PUBLIC strong_ptr)
 target_sources(async_context PUBLIC
     FILE_SET CXX_MODULES
     TYPE CXX_MODULES
 
     FILES
     modules/async_context.cppm
-    modules/future.cppm
-    modules/context.cppm
-    modules/types.cppm
-    modules/promise_base.cppm
 )
 
 install(

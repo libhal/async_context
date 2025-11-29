@@ -30,7 +30,9 @@ module;
 
 export module async_context;
 
-namespace async::inline v0 {
+export import strong_ptr;
+
+export namespace async::inline v0 {
 
 using u8 = std::uint8_t;
 using byte = std::uint8_t;
@@ -40,37 +42,25 @@ enum class blocked_by : u8
 {
   /// Not blocked by anything, ready to run!
   nothing = 0,
-  /// Blocked by an amount of time that must be waited before the task resumes.
-  /// It is the responsibility of the scheduler to defer calling the active
-  /// coroutine of an `context` until the amount of time requested has
-  /// elapsed.
-  ///
-  /// The time duration passed to the transition handler function represents the
-  /// amount of time that the coroutine must suspend for until before scheduling
-  /// the task again. Timed delays in this fashion are not real time and only
-  /// represent the shortest duration of time necessary to fulfil the
-  /// coroutine's delay needs. To schedule the coroutine before its delay time
-  /// has been awaited, is considered to be undefined behavior. It is the
-  /// responsibility of the develop of the transition handler to ensure that
-  /// tasks are not executed until their delay time has elapsed.
-  ///
-  /// A value of 0 means do not wait and suspend but set the blocked by state to
-  /// `time`. This will suspend the coroutine and it later. This is equivalent
-  /// to just performing `std::suspend_always` but with additional steps, thus
-  /// it is not advised to perform `co_await 0ns`.
+
+  /// Blocked by a time duration that must elapse before resuming.
   time = 1,
-  /// Blocked by an I/O operation such as a DMA transfer or a bus. It is the
-  /// responsibility of an interrupt (or thread performing I/O operations) to
-  /// change the state to 'nothing' when the operation has completed.
-  ///
-  /// The time duration passed to the transition handler represents the amount
-  /// of time the task must wait until it may resume the task even before its
-  /// block status has transitioned to "nothing". This would represent the
-  /// coroutine providing a hint to the scheduler about polling the coroutine. A
-  /// value of 0 means wait indefinitely.
+
+  /// Blocked by an I/O operation (DMA, bus transaction, etc.).
+  /// An interrupt or I/O completion will call unblock() when ready.
   io = 2,
-  /// Blocked due to a resource being unavailable
+
+  /// Blocked by a synchronization primitive or resource contention.
+  /// Examples: mutex, semaphore, two coroutines competing for an I2C bus.
+  /// The transition handler may integrate with OS schedulers or implement
+  /// priority inheritance strategies.
   sync = 3,
+
+  /// Blocked by an external coroutine outside the async::context system.
+  /// Examples: co_awaiting std::task, std::generator, or third-party async
+  /// types. The transition handler has no control over scheduling - it can only
+  /// wait for the external coroutine's await_resume() to call unblock().
+  external = 4,
 };
 
 class context;
@@ -124,7 +114,7 @@ using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 using sleep_duration = std::chrono::nanoseconds;
 
 // TODO(#9): Replace std::function with stdex::inplace_function
-using transition_handler = std::function<
+class transition_handler = std::function<
   void(context&, blocked_by, std::variant<sleep_duration, context*>)>;
 
 class context
@@ -133,12 +123,20 @@ public:
   static auto constexpr default_timeout = sleep_duration(0);
 
   /**
-   * @brief Default construct a new async context object
+   * @brief Construct a new context object
    *
-   * Using this async context on a coroutine will result in the allocation
-   * throwing an exception.
+   * @param p_transition_handler - a pointer to a transition handler that
+   * handles transitions in blocked_by state.
+   * @param p_stack_memory - span to a block of memory reserved for this context
+   * to be used as stack memory for coroutine persistent memory. This buffer
+   * must outlive the lifetime of this object.
    */
-  context() = default;
+  context(mem::strong_ptr<transition_handler> const& p_transition_handler,
+          mem::strong_ptr<std::span<byte>> const& p_stack_memory)
+    : m_transition_handler(p_transition_handler)
+    , m_stack(p_stack_memory)
+  {
+  }
 
   void unblock()
   {
@@ -190,29 +188,12 @@ public:
 
   constexpr auto capacity()
   {
-    return m_stack.size();
+    return m_stack->size();
   }
 
   constexpr auto memory_remaining()
   {
     return capacity() - memory_used();
-  }
-
-  /**
-   * @brief Construct a new context object
-   *
-   * @param p_transition_handler - a pointer to a transition handler that
-   * handles transitions in blocked_by state. The transitions handler must
-   * outlive the lifetime of this object.
-   * @param p_stack_memory - span to a block of memory reserved for this context
-   * to be used as stack memory for coroutine persistent memory. This buffer
-   * must outlive the lifetime of this object.
-   */
-  explicit context(transition_handler* p_transition_handler,
-                   std::span<byte> p_stack_memory)
-    : m_transition_handler(p_transition_handler)
-    , m_stack(p_stack_memory)
-  {
   }
 
   void rethrow_if_exception_caught()
@@ -232,19 +213,17 @@ public:
   void transition_to(blocked_by p_new_state, sleep_duration p_info)
   {
     m_state = p_new_state;
-    if (m_transition_handler) {
-      (*m_transition_handler)(*this, p_new_state, p_info);
-    }
+    (*m_transition_handler)(*this, p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
     auto const new_stack_index = m_stack_index + p_bytes;
-    if (new_stack_index > m_stack.size()) [[unlikely]] {
+    if (new_stack_index > m_stack->size()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
     m_state = p_bytes;
-    auto* const stack_address = &m_stack[m_stack_index];
+    auto* const stack_address = &(*m_stack)[m_stack_index];
     m_stack_index = new_stack_index;
     return stack_address;
   }
@@ -262,12 +241,12 @@ public:
 private:
   friend class promise_base;
 
-  // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
+  // Should stay within a standard cache-line of 64 bytes (8 words)
   std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  std::span<byte> m_stack{};                                        // word 3-4
-  usize m_stack_index = 0;                                          // word 5
-  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 6-7
-  transition_handler m_transition_handler = nullptr;                // word 2
+  mem::strong_ptr<transition_handler> m_transition_handler;         // word 2-3
+  mem::strong_ptr<std::span<byte>> m_stack;                         // word 4-5
+  usize m_stack_index = 0;                                          // word 6
+  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 7-8
 };
 
 static_assert(sizeof(context) <=
@@ -483,6 +462,11 @@ private:
   std::variant<monostate_or<T>, std::coroutine_handle<future_promise_type<T>>>*
     m_value_address;
   usize m_frame_size;
+};
+
+struct my_type
+{
+  future<int> get_int();
 };
 
 template<>
