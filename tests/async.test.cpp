@@ -13,26 +13,50 @@
 // limitations under the License.
 
 #include <array>
+#include <chrono>
+#include <coroutine>
 #include <memory_resource>
 #include <span>
 
 #include <boost/ut.hpp>
+#include <variant>
 
 import async_context;
+
+bool print_was_called = false;
+
+async::future<void> coro_print(async::context&)
+{
+  using namespace std::chrono_literals;
+  std::println("Printed from a coroutine");
+  co_await 100ns;
+  std::println("Waited 100ns");
+  print_was_called = true;
+  co_await 100ns;
+  std::println("Waited another 100ns");
+  co_return;
+}
 
 namespace async {
 boost::ut::suite<"async::context"> adc24_test = []() {
   using namespace boost::ut;
 
   "<TBD>"_test = []() {
-    class my_scheduler : public async::scheduler
+    struct my_scheduler : public async::scheduler
     {
+      int sleep_count = 0;
+
     private:
       void do_schedule([[maybe_unused]] context& p_context,
                        [[maybe_unused]] blocked_by p_block_state,
                        [[maybe_unused]] std::variant<sleep_duration, context*>
                          p_block_info) override
       {
+        std::println("SCHEDULED!");
+        if (std::holds_alternative<sleep_duration>(p_block_info)) {
+          std::println("sleep for: {}", std::get<sleep_duration>(p_block_info));
+          sleep_count++;
+        }
       }
     };
     // Setup
@@ -43,8 +67,16 @@ boost::ut::suite<"async::context"> adc24_test = []() {
     auto buffer_span = mem::make_strong_ptr<std::span<async::u8>>(
       std::pmr::new_delete_resource(), *buffer);
     async::context my_context(scheduler, buffer_span);
+
     // Exercise
+    auto future_print = coro_print(my_context);
+    future_print.sync_wait();
+
     // Verify
+    expect(that % print_was_called);
+    expect(that % future_print.done());
+    // TODO(#19): Scheduler isn't being called, fix that.
+    // expect(that % 2 == scheduler->sleep_count);
   };
 };
 }  // namespace async
