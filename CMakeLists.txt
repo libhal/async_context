@@ -16,6 +16,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 project(async_context LANGUAGES CXX)
 
@@ -23,8 +24,11 @@ project(async_context LANGUAGES CXX)
 # Library
 # ==============================================================================
 
+find_package(strong_ptr REQUIRED)
+
 add_library(async_context STATIC)
 target_compile_features(async_context PUBLIC cxx_std_23)
+target_link_libraries(async_context PUBLIC strong_ptr)
 target_sources(async_context PUBLIC
     FILE_SET CXX_MODULES
     TYPE CXX_MODULES
@@ -56,21 +60,21 @@ install(
 
 find_package(ut REQUIRED)
 
-add_executable(async_unit_test)
-
-# Add module files
-target_sources(async_unit_test
-  PRIVATE
-      tests/main.test.cpp
-      tests/async.test.cpp
-)
-
-target_compile_features(async_unit_test PUBLIC cxx_std_23)
-target_link_libraries(async_unit_test PRIVATE async_context boost-ext-ut::ut)
-
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    add_executable(async_unit_test)
+    # Add module files
+    target_sources(async_unit_test
+    PRIVATE
+        tests/main.test.cpp
+        tests/async.test.cpp
+    )
+
+    target_compile_features(async_unit_test PUBLIC cxx_std_23)
+    target_compile_options(async_unit_test PRIVATE -g)
+    target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
+
     message(STATUS "Executing unit tests!")
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
 endif()

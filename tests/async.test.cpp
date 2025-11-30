@@ -12,17 +12,69 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
+#include <chrono>
+#include <coroutine>
+#include <memory_resource>
+#include <span>
+#include <variant>
+
 #include <boost/ut.hpp>
 
 import async_context;
 
+bool resumption_occurred = false;
+
+async::future<void> coro_print(async::context&)
+{
+  using namespace std::chrono_literals;
+  std::println("Printed from a coroutine");
+  co_await 100ns;
+  resumption_occurred = true;
+  co_await 100ns;
+  co_return;
+}
+
 namespace async {
-boost::ut::suite<"async::context"> adc24_test = []() {
+boost::ut::suite<"async::context"> async_context_suite = []() {
   using namespace boost::ut;
+
   "<TBD>"_test = []() {
+    struct my_scheduler : public async::scheduler
+    {
+      int sleep_count = 0;
+
+    private:
+      void do_schedule([[maybe_unused]] context& p_context,
+                       [[maybe_unused]] blocked_by p_block_state,
+                       [[maybe_unused]] std::variant<sleep_duration, context*>
+                         p_block_info) override
+      {
+        std::println("Scheduler called!", sleep_count);
+        if (std::holds_alternative<sleep_duration>(p_block_info)) {
+          std::println("sleep for: {}", std::get<sleep_duration>(p_block_info));
+          sleep_count++;
+          std::println("Sleep count = {}!", sleep_count);
+        }
+      }
+    };
     // Setup
+    auto scheduler =
+      mem::make_strong_ptr<my_scheduler>(std::pmr::new_delete_resource());
+    auto buffer = mem::make_strong_ptr<std::array<async::u8, 1024>>(
+      std::pmr::new_delete_resource());
+    auto buffer_span = mem::make_strong_ptr<std::span<async::u8>>(
+      std::pmr::new_delete_resource(), *buffer);
+    async::context my_context(scheduler, buffer_span);
+
     // Exercise
+    auto future_print = coro_print(my_context);
+    future_print.sync_wait();
+
     // Verify
+    expect(that % resumption_occurred);
+    expect(that % future_print.done());
+    expect(that % 2 == scheduler->sleep_count);
   };
 };
-}
+}  // namespace async

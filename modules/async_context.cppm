@@ -14,21 +14,25 @@
 
 module;
 
-#include <bitset>
+#include <cstddef>
+#include <cstdint>
+
 #include <chrono>
 #include <coroutine>
 #include <exception>
 #include <functional>
 #include <memory_resource>
-#include <numeric>
+#include <new>
 #include <span>
 #include <type_traits>
 #include <utility>
 #include <variant>
 
-export module context;
+export module async_context;
 
-export namespace async {
+export import strong_ptr;
+
+export namespace async::inline v0 {
 
 using u8 = std::uint8_t;
 using byte = std::uint8_t;
@@ -38,128 +42,28 @@ enum class blocked_by : u8
 {
   /// Not blocked by anything, ready to run!
   nothing = 0,
-  /// Blocked by an amount of time that must be waited before the task resumes.
-  /// It is the responsibility of the scheduler to defer calling the active
-  /// coroutine of an `context` until the amount of time requested has
-  /// elapsed.
-  ///
-  /// The time duration passed to the transition handler function represents the
-  /// amount of time that the coroutine must suspend for until before scheduling
-  /// the task again. Timed delays in this fashion are not real time and only
-  /// represent the shortest duration of time necessary to fulfil the
-  /// coroutine's delay needs. To schedule the coroutine before its delay time
-  /// has been awaited, is considered to be undefined behavior. It is the
-  /// responsibility of the develop of the transition handler to ensure that
-  /// tasks are not executed until their delay time has elapsed.
-  ///
-  /// A value of 0 means do not wait and suspend but set the blocked by state to
-  /// `time`. This will suspend the coroutine and it later. This is equivalent
-  /// to just performing `std::suspend_always` but with additional steps, thus
-  /// it is not advised to perform `co_await 0ns`.
+
+  /// Blocked by a time duration that must elapse before resuming.
   time = 1,
-  /// Blocked by an I/O operation such as a DMA transfer or a bus. It is the
-  /// responsibility of an interrupt (or thread performing I/O operations) to
-  /// change the state to 'nothing' when the operation has completed.
-  ///
-  /// The time duration passed to the transition handler represents the amount
-  /// of time the task must wait until it may resume the task even before its
-  /// block status has transitioned to "nothing". This would represent the
-  /// coroutine providing a hint to the scheduler about polling the coroutine. A
-  /// value of 0 means wait indefinitely.
+
+  /// Blocked by an I/O operation (DMA, bus transaction, etc.).
+  /// An interrupt or I/O completion will call unblock() when ready.
   io = 2,
-  /// Blocked by a synchronization primitive of some kind. It is the
-  /// responsibility of - to change the state to 'nothing' when new work is
-  /// available.
-  ///
-  /// The time duration passed to the transition handler represents... TBD
+
+  /// Blocked by a synchronization primitive or resource contention.
+  /// Examples: mutex, semaphore, two coroutines competing for an I2C bus.
+  /// The transition handler may integrate with OS schedulers or implement
+  /// priority inheritance strategies.
   sync = 3,
-  /// Blocked by a lack of work to perform. It is the responsibility of - to
-  /// change the state to 'nothing' when new work is available.
-  ///
-  /// The time duration passed to the transition handler represents the amount
-  /// of time the task must wait until it may resume the task even before its
-  /// block status has transitioned to "nothing". This would represent the
-  /// coroutine providing a hint to the scheduler about polling the coroutine. A
-  /// value of 0 means wait indefinitely.
-  inbox_empty = 4,
-  /// Blocked by congestion to a mailbox of work. For example attempting to
-  /// write a message to one of 3 outgoing mailboxes over CAN but all are
-  /// currently busy waiting to emit their message. It is the
-  /// responsibility of - to change the state to 'nothing' when new work is
-  /// available.
-  ///
-  /// The time duration passed to the transition handler represents the amount
-  /// of time the task must wait until it may resume the task even before its
-  /// block status has transitioned to "nothing". This would represent the
-  /// coroutine providing a hint to the scheduler about polling the coroutine. A
-  /// value of 0 means wait indefinitely.
-  outbox_full = 5,
+
+  /// Blocked by an external coroutine outside the async::context system.
+  /// Examples: co_awaiting std::task, std::generator, or third-party async
+  /// types. The transition handler has no control over scheduling - it can only
+  /// wait for the external coroutine's await_resume() to call unblock().
+  external = 4,
 };
 
 class context;
-
-template<typename T>
-using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
-
-/**
- * @brief The data type for sleep time duration
- *
- */
-using sleep_duration = std::chrono::nanoseconds;
-
-// TODO(#9): Replace std::function with stdex::inplace_function
-using transition_handler =
-  std::function<void(context&, blocked_by, sleep_duration)>;
-
-class runtime_base
-{
-public:
-  ~runtime_base()
-  {
-    if (m_resource) {
-      std::pmr::polymorphic_allocator<byte>(m_resource)
-        .deallocate(m_stack.data(), m_stack.size());
-    }
-  }
-
-  runtime_base(runtime_base const&) = delete;
-  runtime_base& operator=(runtime_base const&) = delete;
-  runtime_base(runtime_base&&) = default;
-  runtime_base& operator=(runtime_base&&) = default;
-
-  void release_context(usize idx)
-  {
-    if (m_release) {
-      m_release(this, idx);
-    }
-  }
-
-protected:
-  using release_function = void(runtime_base*, usize);
-
-  explicit runtime_base(std::pmr::memory_resource& p_resource,
-                        usize p_coroutine_stack_size,
-                        transition_handler p_handler,
-                        release_function* p_release_function)
-    : m_resource(&p_resource)
-    , m_handler(std::move(p_handler))
-    , m_release(p_release_function)
-  {
-    m_stack = std::span{
-      std::pmr::polymorphic_allocator<byte>(m_resource)
-        .allocate(p_coroutine_stack_size),
-      p_coroutine_stack_size,
-    };
-  }
-
-  friend class context;
-
-  // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::pmr::memory_resource* m_resource = nullptr;  // word 1
-  std::span<byte> m_stack{};                        // word 2-3
-  transition_handler m_handler;                     // word 4-7
-  release_function* m_release = nullptr;            // word 8
-};
 
 /**
  * @brief Thrown when an async::context runs out of stack memory
@@ -194,18 +98,86 @@ struct bad_coroutine_alloc : std::bad_alloc
   context const* violator;
 };
 
+// =============================================================================
+//
+// Context
+//
+// =============================================================================
+
+template<typename T>
+using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
+
+/**
+ * @brief The data type for sleep time duration
+ *
+ */
+using sleep_duration = std::chrono::nanoseconds;
+
+/**
+ * @brief
+ *
+ */
+class scheduler
+{
+public:
+  /**
+   * @brief
+   *
+   * It is up to the scheduler to ensure that concurrent calls to this API are
+   * serialized appropriately. For a single threaded event loop, syncronization
+   * and serialization is not necessary. For a thread pool implementation,
+   * syncronization nd serialization must be considered.
+   *
+   * @param p_context - the context that is requested to be scheduled
+   * @param p_block_state - the type of blocking event the context has
+   * encountered.
+   * @param p_block_info - Information about what exactly is blocking this
+   * context. If p_block_info is a sleep_duration, and the p_block_state is
+   * blocked_by::time, then this context is requesting to be scheduled at that
+   * or a later time. If the p_block_info is a sleep_duration, and the block
+   * state isn't blocked_by::time, then this sleep duration is a hint to the
+   * scheduler to when it would be appropriate to reschedule this context. The
+   * scheduler does not have to be abided by this. If p_block_info is a pointer
+   * to a context, then the pointed to context is currently blocking p_context.
+   * This can be used to determine when to schedule p_context again, but does
+   * not have to be abided by for proper function.
+   */
+  void schedule(context& p_context,
+                blocked_by p_block_state,
+                std::variant<sleep_duration, context*> p_block_info)
+  {
+    return do_schedule(p_context, p_block_state, p_block_info);
+  }
+
+private:
+  virtual void do_schedule(
+    context& p_context,
+    blocked_by p_block_state,
+    std::variant<sleep_duration, context*> p_block_info) = 0;
+};
+
 class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
 
+  // TODO(#18): Replace `mem::strong_ptr<std::span<byte>>` stack memory type
+  // with something thats easier and safer to work with.
   /**
-   * @brief Default construct a new async context object
+   * @brief Construct a new context object
    *
-   * Using this async context on a coroutine will result in the allocation
-   * throwing an exception.
+   * @param p_scheduler - a pointer to a transition handler that
+   * handles transitions in blocked_by state.
+   * @param p_stack_memory - span to a block of memory reserved for this context
+   * to be used as stack memory for coroutine persistent memory. This buffer
+   * must outlive the lifetime of this object.
    */
-  context() = default;
+  context(mem::strong_ptr<scheduler> const& p_scheduler,
+          mem::strong_ptr<std::span<byte>> const& p_stack_memory)
+    : m_scheduler(p_scheduler)
+    , m_stack(p_stack_memory)
+  {
+  }
 
   void unblock()
   {
@@ -226,14 +198,6 @@ public:
   void block_by_sync(sleep_duration p_duration = default_timeout)
   {
     transition_to(blocked_by::sync, p_duration);
-  }
-  void block_by_inbox_empty(sleep_duration p_duration = default_timeout)
-  {
-    transition_to(blocked_by::inbox_empty, p_duration);
-  }
-  void block_by_outbox_full(sleep_duration p_duration = default_timeout)
-  {
-    transition_to(blocked_by::outbox_full, p_duration);
   }
 
   [[nodiscard]] constexpr std::coroutine_handle<> active_handle() const
@@ -260,79 +224,17 @@ public:
 
   constexpr auto memory_used()
   {
-    return m_stack_pointer;
+    return m_stack_index;
   }
 
   constexpr auto capacity()
   {
-    return m_stack.size();
+    return m_stack->size();
   }
 
   constexpr auto memory_remaining()
   {
     return capacity() - memory_used();
-  }
-
-private:
-  friend class promise_base;
-
-  template<typename>
-  friend class future_promise_type;
-
-  template<typename>
-  friend class future;
-
-  friend class runtime_base;
-
-  template<usize N>
-  friend class runtime;
-
-  friend class context_lease;
-
-  /**
-   * @brief Construct a new async context object from a parent async context
-   *
-   * This constructor is currently not in use until we determine how the
-   * transition handler should be written for child async context objects.
-   *
-   * @param p_buffer A pointer to this context's portion of a parent
-   * context's coroutine stack
-   * @param p_coroutine_stack_size - the size of the portion of the parent
-   * context's coroutine stack
-   * @param p_handler - handler for this async context
-   */
-  explicit context(runtime_base& p_manager, std::span<byte> p_buffer)
-    : m_manager(&p_manager)
-    , m_stack(p_buffer)
-  {
-  }
-
-  constexpr auto last_allocation_size()
-  {
-    return std::get<usize>(m_state);
-  }
-
-  void transition_to(blocked_by p_new_state, sleep_duration p_info)
-  {
-    m_state = p_new_state;
-    m_manager->m_handler(*this, p_new_state, p_info);
-  }
-
-  [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
-  {
-    auto const new_stack_pointer = m_stack_pointer + p_bytes;
-    if (new_stack_pointer > m_stack.size()) [[unlikely]] {
-      throw bad_coroutine_alloc(this);
-    }
-    m_state = p_bytes;
-    auto* const stack_address = &m_stack[m_stack_pointer];
-    m_stack_pointer = new_stack_pointer;
-    return stack_address;
-  }
-
-  constexpr void deallocate(std::size_t p_bytes)
-  {
-    m_stack_pointer -= p_bytes;
   }
 
   void rethrow_if_exception_caught()
@@ -344,170 +246,64 @@ private:
     }
   }
 
-  // Should stay within a cache-line of 64 bytes (8 words) on 64-bit systems
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  runtime_base* m_manager = nullptr;                                // word 2
-  std::span<byte> m_stack{};                                        // word 3-4
-  usize m_stack_pointer = 0;                                        // word 5
-  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 6-8
-};
-
-template<usize N>
-class runtime;
-
-class context_lease
-{
-  context* m_context;  // word 1
-  usize m_index;       // word 2
-
-public:
-  template<usize N>
-  context_lease(runtime<N>& p_runtime, usize p_index);
-
-  ~context_lease()
+  constexpr auto last_allocation_size()
   {
-    if (m_context) {  // Check if moved-from
-      m_context->m_manager->release_context(m_index);
+    return std::get<usize>(m_state);
+  }
+
+  void transition_to(blocked_by p_new_state, sleep_duration p_info)
+  {
+    m_state = p_new_state;
+    m_scheduler->schedule(*this, p_new_state, p_info);
+  }
+
+  [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
+  {
+    auto const new_stack_index = m_stack_index + p_bytes;
+    if (new_stack_index > m_stack->size()) [[unlikely]] {
+      throw bad_coroutine_alloc(this);
     }
+    m_state = p_bytes;
+    auto* const stack_address = &(*m_stack)[m_stack_index];
+    m_stack_index = new_stack_index;
+    return stack_address;
   }
 
-  context& get()
+  constexpr void deallocate(std::size_t p_bytes)
   {
-    return *m_context;
-  }
-  context& operator*()
-  {
-    return *m_context;
-  }
-  context* operator->()
-  {
-    return m_context;
+    m_stack_index -= p_bytes;
   }
 
-  // Move-only semantics
-  context_lease(context_lease const&) = delete;
-  context_lease& operator=(context_lease const&) = delete;
-
-  context_lease(context_lease&& p_other) noexcept
-    : m_context(std::exchange(p_other.m_context, nullptr))
-    , m_index(p_other.m_index)
+  void set_exception(std::exception_ptr p_exception)
   {
-  }
-
-  context_lease& operator=(context_lease&& p_other) noexcept
-  {
-    if (this != &p_other) {
-      if (m_context) {
-        m_context->m_manager->release_context(m_index);
-      }
-      m_context = std::exchange(p_other.m_context, nullptr);
-      m_index = p_other.m_index;
-    }
-    return *this;
-  }
-};
-
-template<usize context_count = 1>
-class runtime : public runtime_base
-{
-public:
-  static_assert(context_count >= 1);
-
-  // Constructor with individual sizes
-  runtime(std::pmr::memory_resource& p_resource,
-          std::array<usize, context_count> const& p_stack_sizes,
-          transition_handler p_handler)
-    : runtime_base(
-        p_resource,
-        std::accumulate(p_stack_sizes.begin(), p_stack_sizes.end(), 0uz),
-        p_handler,
-        &runtime<context_count>::static_release)
-  {
-    // Partition buffer and construct contexts
-    usize offset = 0;
-    for (usize i = 0; i < context_count; ++i) {
-      m_contexts[i] = context(*this, m_stack.subspan(offset, p_stack_sizes[i]));
-      offset += p_stack_sizes[i];
-    }
-  }
-
-  // Constructor with equal sizes
-  runtime(std::pmr::memory_resource& resource,
-          usize p_stack_size_per_context,
-          transition_handler handler)
-    : runtime(resource, make_array(p_stack_size_per_context), handler)
-  {
-  }
-
-  runtime(runtime const&) = delete;
-  runtime& operator=(runtime const&) = delete;
-  // Move constructor is deleted to prevent invalidation of context. Each
-  // has a pointer to this object which is being relocated.
-  runtime(runtime&&) = delete;
-  runtime& operator=(runtime&&) = delete;
-
-  /**
-   * @brief Lease access to an context
-   *
-   * @param p_index - which async context to use.
-   * @return context&
-   */
-  context& operator[](usize p_index)
-  {
-    if (p_index >= context_count) {
-      safe_throw(out_of_range(this,
-                              {
-                                .m_index = p_index,
-                                .m_capacity = context_count,
-                              }));
-    }
-    if (m_busy[p_index]) {
-      safe_throw(device_or_resource_busy(this));
-    }
-
-    m_busy[p_index] = true;
-
-    return m_contexts[p_index];
-  }
-
-  context_lease lease(usize p_index)
-  {
-    return context_lease(*this, p_index);
+    m_state = p_exception;
   }
 
 private:
-  constexpr void release(usize idx)
-  {
-    if (idx < context_count) {
-      m_busy[idx] = false;
-    }
-  }
+  friend class promise_base;
 
-  static constexpr auto make_array(usize p_stack_size_per_context)
-  {
-    std::array<usize, context_count> result{};
-    result.fill(p_stack_size_per_context);
-    return result;
-  }
-
-  static void static_release(runtime_base* p_base, usize p_index)
-  {
-    // Cast back to this type and call release
-    static_cast<runtime<context_count>*>(p_base)->release(p_index);
-  }
-
-  std::bitset<context_count> m_busy;
-  std::array<context, context_count> m_contexts;
+  // Should stay within a standard cache-line of 64 bytes (8 words)
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
+  mem::strong_ptr<scheduler> m_scheduler;                           // word 2-3
+  mem::strong_ptr<std::span<byte>> m_stack;                         // word 4-5
+  usize m_stack_index = 0;                                          // word 6
+  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 7-8
 };
 
-template<usize N>
-context_lease::context_lease(runtime<N>& p_runtime, usize p_index)
-  : m_context(&p_runtime[p_index])
-  , m_index(p_index)
-{
-}
+static_assert(sizeof(context) <=
+              std::hardware_constructive_interference_size * 2);
 
-struct pop_active_coroutine_directly
+// =============================================================================
+//
+// Promise Base
+//
+// =============================================================================
+
+/**
+ * @brief
+ *
+ */
+struct pop_active_coroutine
 {};
 
 class promise_base
@@ -581,7 +377,7 @@ public:
     return std::suspend_always{};
   }
 
-  constexpr auto await_transform(pop_active_coroutine_directly) noexcept
+  constexpr auto await_transform(pop_active_coroutine) noexcept
   {
     return pop_active_coroutine();
   }
@@ -592,7 +388,7 @@ public:
     return static_cast<U&&>(p_awaitable);
   }
 
-  constexpr auto& context()
+  constexpr auto& get_context()
   {
     return *m_context;
   }
@@ -643,7 +439,7 @@ public:
   {
     pop_active_coroutine();
     // After this point accessing the state of the coroutine is UB.
-    m_context->m_state = std::current_exception();
+    m_context->set_exception(std::current_exception());
   }
 
   struct final_awaiter
@@ -777,7 +573,7 @@ public:
 
   void unhandled_exception() noexcept
   {
-    m_context->m_state = std::current_exception();
+    m_context->set_exception(std::current_exception());
   }
 
   void self_destruct()
@@ -867,7 +663,7 @@ public:
       // exception that needs to be propagated through the calling coroutine.
       if (std::holds_alternative<task_handle_type>(m_operation->m_result))
         [[unlikely]] {
-        auto& context = m_operation->handle().promise().context();
+        auto& context = m_operation->handle().promise().get_context();
 
         context.rethrow_if_exception_caught();
 
@@ -892,7 +688,7 @@ public:
 
     // Check if our awaiter is not ready and if so, run it until it finishes
     if (not manual_awaiter.await_ready()) {
-      auto& context = handle().promise().context();
+      auto& context = handle().promise().get_context();
       context.sync_wait();
     }
 
@@ -977,7 +773,7 @@ constexpr future<T> future_promise_type<T>::get_return_object() noexcept
   // m_state to 'blocked_by::nothing'.
   m_frame_size = m_context->last_allocation_size();
   // Now stomp the union out and set it to the blocked_by::nothing state.
-  m_context->m_state = blocked_by(blocked_by::nothing);
+  m_context->unblock_without_notification();
   return future<T>{ handle };
 }
 
@@ -991,7 +787,8 @@ future_promise_type<void>::get_return_object() noexcept
   // m_state to 'blocked_by::nothing'.
   m_frame_size = m_context->last_allocation_size();
   // Now stomp the union out and set it to the blocked_by::nothing state.
-  m_context->m_state = blocked_by::nothing;
+  m_context->unblock_without_notification();
   return future<void>{ handle };
 }
-}  // namespace async
+
+}  // namespace async::inline v0
