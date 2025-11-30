@@ -505,11 +505,6 @@ private:
   usize m_frame_size;
 };
 
-struct my_type
-{
-  future<int> get_int();
-};
-
 template<>
 class future_promise_type<void> : public promise_base
 {
