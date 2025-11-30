@@ -17,6 +17,8 @@ cmake_minimum_required(VERSION 3.28)
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
+set(CMAKE_EXPERIMENTAL_EXPORT_PACKAGE_DEPENDENCIES
+    "1942b4fa-b2c5-4546-9385-83f254070067")
 
 project(async_context LANGUAGES CXX)
 
@@ -48,10 +50,10 @@ install(
 
 install(
     EXPORT async_context_targets
-    FILE "libasync_context-config.cmake"
-    NAMESPACE libasync_context::
+    FILE "async_context-config.cmake"
     DESTINATION "lib/cmake"
     CXX_MODULES_DIRECTORY "cxx-modules"
+    EXPORT_PACKAGE_DEPENDENCIES
 )
 
 # ==============================================================================

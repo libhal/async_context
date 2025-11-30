@@ -599,7 +599,7 @@ public:
 
   constexpr void resume() const
   {
-    auto active = handle().promise().context().active_handle();
+    auto active = handle().promise().get_context().active_handle();
     active.resume();
   }
 
