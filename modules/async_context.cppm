@@ -146,7 +146,7 @@ public:
                 blocked_by p_block_state,
                 std::variant<sleep_duration, context*> p_block_info)
   {
-    return schedule(p_context, p_block_state, p_block_info);
+    return do_schedule(p_context, p_block_state, p_block_info);
   }
 
 private:

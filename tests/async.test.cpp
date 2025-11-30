@@ -17,28 +17,26 @@
 #include <coroutine>
 #include <memory_resource>
 #include <span>
+#include <variant>
 
 #include <boost/ut.hpp>
-#include <variant>
 
 import async_context;
 
-bool print_was_called = false;
+bool resumption_occurred = false;
 
 async::future<void> coro_print(async::context&)
 {
   using namespace std::chrono_literals;
   std::println("Printed from a coroutine");
   co_await 100ns;
-  std::println("Waited 100ns");
-  print_was_called = true;
+  resumption_occurred = true;
   co_await 100ns;
-  std::println("Waited another 100ns");
   co_return;
 }
 
 namespace async {
-boost::ut::suite<"async::context"> adc24_test = []() {
+boost::ut::suite<"async::context"> async_context_suite = []() {
   using namespace boost::ut;
 
   "<TBD>"_test = []() {
@@ -52,10 +50,11 @@ boost::ut::suite<"async::context"> adc24_test = []() {
                        [[maybe_unused]] std::variant<sleep_duration, context*>
                          p_block_info) override
       {
-        std::println("SCHEDULED!");
+        std::println("Scheduler called!", sleep_count);
         if (std::holds_alternative<sleep_duration>(p_block_info)) {
           std::println("sleep for: {}", std::get<sleep_duration>(p_block_info));
           sleep_count++;
+          std::println("Sleep count = {}!", sleep_count);
         }
       }
     };
@@ -73,10 +72,9 @@ boost::ut::suite<"async::context"> adc24_test = []() {
     future_print.sync_wait();
 
     // Verify
-    expect(that % print_was_called);
+    expect(that % resumption_occurred);
     expect(that % future_print.done());
-    // TODO(#19): Scheduler isn't being called, fix that.
-    // expect(that % 2 == scheduler->sleep_count);
+    expect(that % 2 == scheduler->sleep_count);
   };
 };
 }  // namespace async

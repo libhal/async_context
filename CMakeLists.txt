@@ -72,7 +72,8 @@ else()
     )
 
     target_compile_features(async_unit_test PUBLIC cxx_std_23)
-    target_link_libraries(async_unit_test PRIVATE async_context boost-ext-ut::ut)
+    target_compile_options(async_unit_test PRIVATE -g)
+    target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
     message(STATUS "Executing unit tests!")
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
