@@ -43,8 +43,8 @@ private:
 async::future<void> coro_double_delay(async::context&)
 {
   using namespace std::chrono_literals;
-  co_await 500ms;
-  co_await 500ms;
+  co_await std::chrono::milliseconds(500);
+  co_await std::chrono::milliseconds(500);
   co_return;
 }
 

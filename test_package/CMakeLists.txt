@@ -26,6 +26,7 @@ if(NOT CMAKE_GENERATOR MATCHES "Ninja|Visual Studio")
 endif()
 
 find_package(async_context REQUIRED CONFIG)
+find_package(strong_ptr REQUIRED CONFIG)
 
 add_executable(${PROJECT_NAME})
 target_sources(${PROJECT_NAME} PUBLIC
@@ -36,6 +37,7 @@ target_sources(${PROJECT_NAME} PUBLIC
 target_include_directories(${PROJECT_NAME} PUBLIC .)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_link_libraries(${PROJECT_NAME} PRIVATE async_context)
+target_link_libraries(${PROJECT_NAME} PRIVATE async_context strong_ptr)
 
 # Always run this custom target by making it depend on ALL
 add_custom_target(copy_compile_commands ALL

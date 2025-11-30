@@ -85,7 +85,7 @@ class async_context_conan(ConanFile):
 
     def build_requirements(self):
         # Provides CMake, Ninja, & toolchain scripts for enabling modules
-        self.tool_requires("cmake-modules-toolchain/1.0.2")
+        self.tool_requires("cmake-modules-toolchain/1.0.3")
         self.test_requires("boost-ext-ut/2.3.1")
 
     def requirements(self):

@@ -17,8 +17,6 @@ cmake_minimum_required(VERSION 3.28)
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
-set(CMAKE_EXPERIMENTAL_EXPORT_PACKAGE_DEPENDENCIES
-    "1942b4fa-b2c5-4546-9385-83f254070067")
 
 project(async_context LANGUAGES CXX)
 
@@ -53,7 +51,7 @@ install(
     FILE "async_context-config.cmake"
     DESTINATION "lib/cmake"
     CXX_MODULES_DIRECTORY "cxx-modules"
-    EXPORT_PACKAGE_DEPENDENCIES
+    # EXPORT_PACKAGE_DEPENDENCIES
 )
 
 # ==============================================================================
@@ -65,6 +63,7 @@ find_package(ut REQUIRED)
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
     # Add module files
     target_sources(async_unit_test
@@ -77,7 +76,6 @@ else()
     target_compile_options(async_unit_test PRIVATE -g)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
-    message(STATUS "Executing unit tests!")
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
 endif()
 
