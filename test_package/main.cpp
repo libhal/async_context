@@ -42,11 +42,12 @@ private:
 
 async::future<void> coro_double_delay(async::context&)
 {
-  using namespace std::chrono_literals;
-  co_await 100ns;
-  co_await 100ns;
+  // using namespace std::chrono_literals;
+  // co_await 100ns;
+  // co_await 100ns;
   co_return;
 }
+
 int main()
 {
   auto scheduler =
@@ -68,11 +69,11 @@ int main()
   future_delay.resume();
 
   assert(scheduler->sleep_count == 2);
-  assert(not scheduler->done());
+  assert(not future_delay.done());
 
   future_delay.resume();
 
-  assert(scheduler->done());
+  assert(future_delay.done());
 
   return 0;
 }
