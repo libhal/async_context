@@ -31,10 +31,10 @@ private:
   void do_schedule(
     [[maybe_unused]] async::context& p_context,
     [[maybe_unused]] async::blocked_by p_block_state,
-    [[maybe_unused]] std::variant<async::sleep_duration, async::context*>
+    [[maybe_unused]] std::variant<std::chrono::nanoseconds, async::context*>
       p_block_info) override
   {
-    if (std::holds_alternative<async::sleep_duration>(p_block_info)) {
+    if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
       sleep_count++;
     }
   }
@@ -43,8 +43,8 @@ private:
 async::future<void> coro_double_delay(async::context&)
 {
   using namespace std::chrono_literals;
-  co_await std::chrono::milliseconds(500);
-  co_await std::chrono::milliseconds(500);
+  co_await 500ms;
+  co_await 500ms;
   co_return;
 }
 

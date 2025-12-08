@@ -51,7 +51,7 @@ install(
     FILE "async_context-config.cmake"
     DESTINATION "lib/cmake"
     CXX_MODULES_DIRECTORY "cxx-modules"
-    # EXPORT_PACKAGE_DEPENDENCIES
+    EXPORT_PACKAGE_DEPENDENCIES
 )
 
 # ==============================================================================

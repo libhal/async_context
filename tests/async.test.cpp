@@ -45,14 +45,16 @@ boost::ut::suite<"async::context"> async_context_suite = []() {
       int sleep_count = 0;
 
     private:
-      void do_schedule([[maybe_unused]] context& p_context,
-                       [[maybe_unused]] blocked_by p_block_state,
-                       [[maybe_unused]] std::variant<sleep_duration, context*>
-                         p_block_info) override
+      void do_schedule(
+        [[maybe_unused]] context& p_context,
+        [[maybe_unused]] blocked_by p_block_state,
+        [[maybe_unused]] std::variant<std::chrono::nanoseconds, context*>
+          p_block_info) override
       {
         std::println("Scheduler called!", sleep_count);
-        if (std::holds_alternative<sleep_duration>(p_block_info)) {
-          std::println("sleep for: {}", std::get<sleep_duration>(p_block_info));
+        if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
+          std::println("sleep for: {}",
+                       std::get<std::chrono::nanoseconds>(p_block_info));
           sleep_count++;
           std::println("Sleep count = {}!", sleep_count);
         }
