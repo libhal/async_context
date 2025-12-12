@@ -26,6 +26,7 @@ jobs:
     with:
       version: ${{ github.ref_name }}
       remote_url: https://libhal.jfrog.io/artifactory/api/conan/trunk-conan
+      modules_support_needed: true
     secrets:
       conan_remote_password: ${{ secrets.JFROG_LIBHAL_TRUNK_ID_TOKEN }}
       conan_remote_user: ${{ secrets.JFROG_LIBHAL_TRUNK_ID_TOKEN_USER }}

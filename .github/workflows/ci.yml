@@ -24,4 +24,6 @@ on:
 jobs:
   package_and_upload_all_check:
     uses: libhal/ci/.github/workflows/package_and_upload_all.yml@5.x.y
+    with:
+      modules_support_needed: true
     secrets: inherit

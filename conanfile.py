@@ -84,13 +84,12 @@ class async_context_conan(ConanFile):
         self._validate_compiler_version()
 
     def build_requirements(self):
-        # Provides CMake, Ninja, & toolchain scripts for enabling modules
-        self.tool_requires("cmake-modules-toolchain/1.0.3")
+        self.tool_requires("cmake/[^4.0.0]")
+        self.tool_requires("ninja/[^1.3.0]")
         self.test_requires("boost-ext-ut/2.3.1")
 
     def requirements(self):
-        self.requires("strong_ptr/0.0.0", transitive_libs=True,
-                      transitive_headers=True)
+        self.requires("strong_ptr/0.0.2")
 
     def layout(self):
         cmake_layout(self)
