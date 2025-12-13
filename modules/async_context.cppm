@@ -20,7 +20,6 @@ module;
 #include <chrono>
 #include <coroutine>
 #include <exception>
-#include <functional>
 #include <memory_resource>
 #include <new>
 #include <span>
@@ -32,14 +31,13 @@ export module async_context;
 
 export import strong_ptr;
 
-export namespace async::inline v0 {
+namespace async::inline v0 {
 
-using u8 = std::uint8_t;
-using byte = std::uint8_t;
-using usize = std::size_t;
+export using u8 = std::uint8_t;
+export using byte = std::uint8_t;
+export using usize = std::size_t;
 
-enum class blocked_by : u8
-{
+export enum class blocked_by : u8 {
   /// Not blocked by anything, ready to run!
   nothing = 0,
 
@@ -63,7 +61,7 @@ enum class blocked_by : u8
   external = 4,
 };
 
-class context;
+export class context;
 
 /**
  * @brief Thrown when an async::context runs out of stack memory
@@ -72,7 +70,7 @@ class context;
  * cannot fit withint he context.
  *
  */
-struct bad_coroutine_alloc : std::bad_alloc
+export struct bad_coroutine_alloc : std::bad_alloc
 {
   bad_coroutine_alloc(context const* p_violator)
     : violator(p_violator)
@@ -117,7 +115,7 @@ using sleep_duration = std::chrono::nanoseconds;
  * @brief
  *
  */
-class scheduler
+export class scheduler
 {
 public:
   /**
@@ -156,7 +154,7 @@ private:
     std::variant<sleep_duration, context*> p_block_info) = 0;
 };
 
-class context
+export class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
@@ -415,10 +413,10 @@ protected:
   class context* m_context;
 };
 
-template<typename T>
+export template<typename T>
 class future;
 
-template<typename T>
+export template<typename T>
 class future_promise_type : public promise_base
 {
 public:
@@ -505,7 +503,7 @@ private:
   usize m_frame_size;
 };
 
-template<>
+export template<>
 class future_promise_type<void> : public promise_base
 {
 public:
@@ -589,7 +587,7 @@ private:
   usize m_frame_size = 0;
 };
 
-template<typename T>
+export template<typename T>
 class future
 {
 public:
@@ -599,7 +597,7 @@ public:
 
   constexpr void resume() const
   {
-    auto active = handle().promise().context().active_handle();
+    auto active = handle().promise().get_context().active_handle();
     active.resume();
   }
 

@@ -48,10 +48,10 @@ install(
 
 install(
     EXPORT async_context_targets
-    FILE "libasync_context-config.cmake"
-    NAMESPACE libasync_context::
+    FILE "async_context-config.cmake"
     DESTINATION "lib/cmake"
     CXX_MODULES_DIRECTORY "cxx-modules"
+    EXPORT_PACKAGE_DEPENDENCIES
 )
 
 # ==============================================================================
@@ -63,6 +63,7 @@ find_package(ut REQUIRED)
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
     # Add module files
     target_sources(async_unit_test
@@ -75,7 +76,6 @@ else()
     target_compile_options(async_unit_test PRIVATE -g)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
-    message(STATUS "Executing unit tests!")
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
 endif()
 
