@@ -22,11 +22,12 @@ on:
 jobs:
   deploy:
     if: startsWith(github.ref, 'refs/tags/')
-    uses: libhal/ci/.github/workflows/package_and_upload_all.yml@5.x.y
+    uses: libhal/ci/.github/workflows/package_and_upload_all.yml@coro-carve-out
     with:
       version: ${{ github.ref_name }}
       remote_url: https://libhal.jfrog.io/artifactory/api/conan/trunk-conan
       modules_support_needed: true
+      coroutine_support_needed: true
     secrets:
       conan_remote_password: ${{ secrets.JFROG_LIBHAL_TRUNK_ID_TOKEN }}
       conan_remote_user: ${{ secrets.JFROG_LIBHAL_TRUNK_ID_TOKEN_USER }}

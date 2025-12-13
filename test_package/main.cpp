@@ -18,6 +18,7 @@
 #include <chrono>
 #include <coroutine>
 #include <memory_resource>
+#include <print>
 #include <span>
 #include <variant>
 
@@ -43,8 +44,11 @@ private:
 async::future<void> coro_double_delay(async::context&)
 {
   using namespace std::chrono_literals;
+  std::println("Delay for 500ms");
   co_await 500ms;
+  std::println("Delay for another 500ms");
   co_await 500ms;
+  std::println("Returning!");
   co_return;
 }
 

@@ -23,7 +23,8 @@ on:
 
 jobs:
   package_and_upload_all_check:
-    uses: libhal/ci/.github/workflows/package_and_upload_all.yml@5.x.y
+    uses: libhal/ci/.github/workflows/package_and_upload_all.yml@coro-carve-out
     with:
       modules_support_needed: true
+      coroutine_support_needed: true
     secrets: inherit
