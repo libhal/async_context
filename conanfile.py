@@ -89,7 +89,7 @@ class async_context_conan(ConanFile):
         self.test_requires("boost-ext-ut/2.3.1")
 
     def requirements(self):
-        self.requires("strong_ptr/0.0.2")
+        self.requires("strong_ptr/0.1.2")
 
     def layout(self):
         cmake_layout(self)

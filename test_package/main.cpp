@@ -14,19 +14,23 @@
 
 #include <cassert>
 
-#include <array>
 #include <chrono>
 #include <coroutine>
 #include <memory_resource>
 #include <print>
-#include <span>
 #include <variant>
 
 import async_context;
 
-struct my_scheduler : public async::scheduler
+struct my_scheduler
+  : public async::scheduler
+  , mem::enable_strong_from_this<my_scheduler>
 {
   int sleep_count = 0;
+
+  my_scheduler(mem::strong_ptr_only_token)
+  {
+  }
 
 private:
   void do_schedule(
@@ -38,6 +42,11 @@ private:
     if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
       sleep_count++;
     }
+  }
+
+  std::pmr::memory_resource& do_get_allocator() noexcept override
+  {
+    return *strong_from_this().get_allocator();
   }
 };
 
@@ -56,11 +65,7 @@ int main()
 {
   auto scheduler =
     mem::make_strong_ptr<my_scheduler>(std::pmr::new_delete_resource());
-  auto buffer = mem::make_strong_ptr<std::array<async::u8, 1024>>(
-    std::pmr::new_delete_resource());
-  auto buffer_span = mem::make_strong_ptr<std::span<async::u8>>(
-    std::pmr::new_delete_resource(), *buffer);
-  async::context my_context(scheduler, buffer_span);
+  async::context my_context(scheduler, 1024);
 
   auto future_delay = coro_double_delay(my_context);
 

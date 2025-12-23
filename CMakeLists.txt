@@ -36,6 +36,15 @@ target_sources(async_context PUBLIC
     FILES
     modules/async_context.cppm
 )
+target_compile_options(async_context PRIVATE
+    -g
+    -Werror
+    -Wno-unused-command-line-argument
+    -Wall
+    -Wextra
+    -Wshadow
+    -fexceptions
+    -fno-rtti)
 
 install(
     TARGETS async_context
@@ -73,7 +82,15 @@ else()
     )
 
     target_compile_features(async_unit_test PUBLIC cxx_std_23)
-    target_compile_options(async_unit_test PRIVATE -g)
+    target_compile_options(async_unit_test PRIVATE
+        -g
+        -Werror
+        -Wno-unused-command-line-argument
+        -Wall
+        -Wextra
+        -Wshadow
+        -fexceptions
+        -fno-rtti)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
