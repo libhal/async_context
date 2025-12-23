@@ -36,6 +36,15 @@ target_sources(${PROJECT_NAME} PUBLIC
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_link_libraries(${PROJECT_NAME} PRIVATE async_context)
 
+target_compile_options(${PROJECT_NAME} PRIVATE
+    -g
+    -Werror
+    -Wno-unused-command-line-argument
+    -Wall
+    -Wextra
+    -Wshadow
+    -fexceptions
+    -fno-rtti)
 # Always run this custom target by making it depend on ALL
 add_custom_target(copy_compile_commands ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

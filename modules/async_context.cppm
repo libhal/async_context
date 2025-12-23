@@ -147,11 +147,29 @@ public:
     return do_schedule(p_context, p_block_state, p_block_info);
   }
 
+  /**
+   * @brief Get allocator from scheduler
+   *
+   * The memory_resource returned be owned or embedded within the scheduler. The
+   * memory_resource and its backing memory must live as long as the scheduler.
+   * The returned reference MUST NOT be bound to a nullptr.
+   *
+   * @return std::pmr::memory_resource& - the memory resource to be used to
+   * allocate memory for async::context stack memory. The memory_resource must
+   * be owned or embedded within the scheduler.
+   */
+  std::pmr::memory_resource& get_allocator() noexcept
+  {
+    return do_get_allocator();
+  }
+
 private:
   virtual void do_schedule(
     context& p_context,
     blocked_by p_block_state,
     std::variant<sleep_duration, context*> p_block_info) = 0;
+
+  virtual std::pmr::memory_resource& do_get_allocator() noexcept = 0;
 };
 
 export class context
@@ -159,22 +177,23 @@ export class context
 public:
   static auto constexpr default_timeout = sleep_duration(0);
 
-  // TODO(#18): Replace `mem::strong_ptr<std::span<byte>>` stack memory type
   // with something thats easier and safer to work with.
   /**
    * @brief Construct a new context object
    *
    * @param p_scheduler - a pointer to a transition handler that
    * handles transitions in blocked_by state.
-   * @param p_stack_memory - span to a block of memory reserved for this context
-   * to be used as stack memory for coroutine persistent memory. This buffer
-   * must outlive the lifetime of this object.
+   * @param p_stack_size - Number of bytes to allocate for the context's stack
+   * memory.
    */
-  context(mem::strong_ptr<scheduler> const& p_scheduler,
-          mem::strong_ptr<std::span<byte>> const& p_stack_memory)
+  context(mem::strong_ptr<scheduler> const& p_scheduler, usize p_stack_size)
     : m_scheduler(p_scheduler)
-    , m_stack(p_stack_memory)
   {
+    using poly_allocator = std::pmr::polymorphic_allocator<byte>;
+    auto allocator = poly_allocator(&p_scheduler->get_allocator());
+
+    // Allocate memory for stack and assign to m_stack
+    m_stack = { allocator.allocate_object<byte>(p_stack_size), p_stack_size };
   }
 
   void unblock()
@@ -227,7 +246,7 @@ public:
 
   constexpr auto capacity()
   {
-    return m_stack->size();
+    return m_stack.size();
   }
 
   constexpr auto memory_remaining()
@@ -258,11 +277,11 @@ public:
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
     auto const new_stack_index = m_stack_index + p_bytes;
-    if (new_stack_index > m_stack->size()) [[unlikely]] {
+    if (new_stack_index > m_stack.size()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
     m_state = p_bytes;
-    auto* const stack_address = &(*m_stack)[m_stack_index];
+    auto* const stack_address = &m_stack[m_stack_index];
     m_stack_index = new_stack_index;
     return stack_address;
   }
@@ -277,15 +296,23 @@ public:
     m_state = p_exception;
   }
 
+  ~context()
+  {
+    using poly_allocator = std::pmr::polymorphic_allocator<byte>;
+    auto allocator = poly_allocator(&m_scheduler->get_allocator());
+    allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
+  };
+
 private:
   friend class promise_base;
+  using context_state = std::variant<usize, blocked_by, std::exception_ptr>;
 
   // Should stay within a standard cache-line of 64 bytes (8 words)
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  mem::strong_ptr<scheduler> m_scheduler;                           // word 2-3
-  mem::strong_ptr<std::span<byte>> m_stack;                         // word 4-5
-  usize m_stack_index = 0;                                          // word 6
-  std::variant<usize, blocked_by, std::exception_ptr> m_state;      // word 7-8
+  mem::strong_ptr<scheduler> m_scheduler;                           // word 1-2
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 3
+  std::span<byte> m_stack{};                                        // word 4-5
+  usize m_stack_index{ 0uz };                                       // word 6
+  context_state m_state{ 0uz };                                     // word 7-8
 };
 
 static_assert(sizeof(context) <=

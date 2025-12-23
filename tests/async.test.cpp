@@ -40,9 +40,15 @@ boost::ut::suite<"async::context"> async_context_suite = []() {
   using namespace boost::ut;
 
   "<TBD>"_test = []() {
-    struct my_scheduler : public async::scheduler
+    struct my_scheduler
+      : public async::scheduler
+      , mem::enable_strong_from_this<my_scheduler>
     {
       int sleep_count = 0;
+
+      my_scheduler(mem::strong_ptr_only_token)
+      {
+      }
 
     private:
       void do_schedule(
@@ -59,15 +65,16 @@ boost::ut::suite<"async::context"> async_context_suite = []() {
           std::println("Sleep count = {}!", sleep_count);
         }
       }
+
+      std::pmr::memory_resource& do_get_allocator() noexcept override
+      {
+        return *strong_from_this().get_allocator();
+      }
     };
     // Setup
     auto scheduler =
       mem::make_strong_ptr<my_scheduler>(std::pmr::new_delete_resource());
-    auto buffer = mem::make_strong_ptr<std::array<async::u8, 1024>>(
-      std::pmr::new_delete_resource());
-    auto buffer_span = mem::make_strong_ptr<std::span<async::u8>>(
-      std::pmr::new_delete_resource(), *buffer);
-    async::context my_context(scheduler, buffer_span);
+    async::context my_context(scheduler, 1024);
 
     // Exercise
     auto future_print = coro_print(my_context);
