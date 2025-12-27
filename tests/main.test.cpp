@@ -14,12 +14,14 @@
 
 // export module libahl_unit_tests;
 
-namespace hal {
+namespace async {
 // Extern position dependant test go here. Refrain from using this whenever
 // possible.
-}  // namespace hal
+extern void async_context_suite();
+}  // namespace async
 
 int main()
 {
   // Position dependent test go below:
+  async::async_context_suite();
 }
