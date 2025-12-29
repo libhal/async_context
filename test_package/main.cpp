@@ -22,22 +22,21 @@
 
 import async_context;
 
-struct my_scheduler
+struct test_scheduler
   : public async::scheduler
-  , mem::enable_strong_from_this<my_scheduler>
+  , mem::enable_strong_from_this<test_scheduler>
 {
   int sleep_count = 0;
 
-  my_scheduler(mem::strong_ptr_only_token)
+  test_scheduler(mem::strong_ptr_only_token)
   {
   }
 
 private:
-  void do_schedule(
-    [[maybe_unused]] async::context& p_context,
-    [[maybe_unused]] async::blocked_by p_block_state,
-    [[maybe_unused]] std::variant<std::chrono::nanoseconds, async::context*>
-      p_block_info) override
+  void do_schedule([[maybe_unused]] async::context& p_context,
+                   [[maybe_unused]] async::blocked_by p_block_state,
+                   [[maybe_unused]] async::scheduler::block_info
+                     p_block_info) noexcept override
   {
     if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
       sleep_count++;
@@ -64,7 +63,7 @@ async::future<void> coro_double_delay(async::context&)
 int main()
 {
   auto scheduler =
-    mem::make_strong_ptr<my_scheduler>(std::pmr::new_delete_resource());
+    mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
   async::context my_context(scheduler, 1024);
 
   auto future_delay = coro_double_delay(my_context);
