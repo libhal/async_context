@@ -177,6 +177,7 @@ export class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
+  using scheduler_t = mem::strong_ptr<scheduler>;
 
   // with something thats easier and safer to work with.
   /**
@@ -187,8 +188,8 @@ public:
    * @param p_stack_size - Number of bytes to allocate for the context's stack
    * memory.
    */
-  context(mem::strong_ptr<scheduler> const& p_scheduler, usize p_stack_size)
-    : m_scheduler(p_scheduler)
+  context(scheduler_t const& p_scheduler, usize p_stack_size)
+    : m_proxy(p_scheduler)
   {
     using poly_allocator = std::pmr::polymorphic_allocator<byte>;
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
@@ -197,46 +198,48 @@ public:
     m_stack = { allocator.allocate_object<byte>(p_stack_size), p_stack_size };
   }
 
-  void unblock() noexcept
+  constexpr void unblock() noexcept
   {
     transition_to(blocked_by::nothing);
   }
 
-  void unblock_without_notification()
+  constexpr void unblock_without_notification() noexcept
   {
     m_state = blocked_by::nothing;
   }
 
-  std::suspend_always block_by_time(sleep_duration p_duration)
+  constexpr std::suspend_always block_by_time(
+    sleep_duration p_duration) noexcept
   {
     transition_to(blocked_by::time, p_duration);
     return {};
   }
 
-  std::suspend_always block_by_io(sleep_duration p_duration = default_timeout)
+  constexpr std::suspend_always block_by_io(
+    sleep_duration p_duration = default_timeout) noexcept
   {
     transition_to(blocked_by::io, p_duration);
     return {};
   }
 
-  std::suspend_always block_by_sync(context* p_blocker)
+  constexpr std::suspend_always block_by_sync(context* p_blocker) noexcept
   {
     transition_to(blocked_by::sync, p_blocker);
     return {};
   }
 
-  std::suspend_always block_by_external()
+  constexpr std::suspend_always block_by_external() noexcept
   {
     transition_to(blocked_by::external, std::monostate{});
     return {};
   }
 
-  [[nodiscard]] constexpr std::coroutine_handle<> active_handle() const
+  [[nodiscard]] constexpr std::coroutine_handle<> active_handle() const noexcept
   {
     return m_active_handle;
   }
 
-  [[nodiscard]] auto state() const
+  [[nodiscard]] constexpr auto state() const noexcept
   {
     if (std::holds_alternative<blocked_by>(m_state)) {
       return std::get<blocked_by>(m_state);
@@ -256,17 +259,24 @@ public:
     }
   }
 
-  constexpr auto memory_used()
+  void cancel()
+  {
+    if (m_active_handle != std::noop_coroutine()) {
+      // TODO(): Implement! Doesn't do anything yet.
+    }
+  }
+
+  [[nodiscard]] constexpr auto memory_used() const noexcept
   {
     return m_stack_index;
   }
 
-  constexpr auto capacity()
+  [[nodiscard]] constexpr auto capacity() const noexcept
   {
     return m_stack.size();
   }
 
-  constexpr auto memory_remaining()
+  [[nodiscard]] constexpr auto memory_remaining() const noexcept
   {
     return capacity() - memory_used();
   }
@@ -280,7 +290,7 @@ public:
     }
   }
 
-  constexpr auto last_allocation_size()
+  [[nodiscard]] constexpr auto last_allocation_size() const noexcept
   {
     if (std::holds_alternative<usize>(m_state)) {
       return std::get<usize>(m_state);
@@ -288,11 +298,32 @@ public:
     return 0uz;
   }
 
+  [[nodiscard]] constexpr bool is_proxy() const noexcept
+  {
+    return std::holds_alternative<scheduler_t>(m_proxy);
+  }
+
+  context create_proxy()
+  {
+    return { proxy_tag{}, *this };
+  }
+
   ~context()
   {
-    using poly_allocator = std::pmr::polymorphic_allocator<byte>;
-    auto allocator = poly_allocator(&m_scheduler->get_allocator());
-    allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
+    if (std::holds_alternative<scheduler_t>(m_proxy)) {
+      using poly_allocator = std::pmr::polymorphic_allocator<byte>;
+      auto scheduler = std::get<scheduler_t>(m_proxy);
+      auto allocator = poly_allocator(&scheduler->get_allocator());
+      allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
+    } else {
+      auto* parent = std::get<proxy_info>(m_proxy).parent;
+      // Unshrink parent stack, by setting its range to be the start of its
+      // stack and the end to be the end of this stack.
+      parent->m_stack = std::span(parent->m_stack.begin(), m_stack.end());
+    }
+
+    // We need to destroy the entire coroutine chain here!
+    cancel();
   };
 
 private:
@@ -300,13 +331,78 @@ private:
   template<typename T>
   friend class future_promise_type;
 
-  using context_state = std::variant<usize, blocked_by, std::exception_ptr>;
-
-  void transition_to(blocked_by p_new_state,
-                     scheduler::block_info p_info = std::monostate{}) noexcept
+  struct proxy_info
   {
-    m_state = p_new_state;
-    m_scheduler->schedule(*this, p_new_state, p_info);
+    context* origin = nullptr;
+    context* parent = nullptr;
+  };
+
+  struct proxy_tag
+  {};
+
+  context(proxy_tag, context& p_parent)
+    : m_active_handle(std::noop_coroutine())
+    , m_state(0uz)
+    , m_proxy(proxy_info{})
+  {
+    // We need to manually set:
+    //    1. m_stack
+    //    2. m_stack_index
+    //    3. m_proxy
+
+    auto const previous_stack = p_parent.m_stack;
+    auto const previous_m_stack_index = p_parent.m_stack_index;
+    auto const rest_of_the_stack =
+      previous_stack.subspan(previous_m_stack_index);
+
+    // Our proxy will take control over the rest of the unused stack memory from
+    // the above context.
+    m_stack = rest_of_the_stack;
+    m_stack_index = 0uz;
+
+    // Shrink the stack of the parent context to be equal to the current stack
+    // index. This will prevent the parent context from being used again.
+    p_parent.m_stack = p_parent.m_stack.first(previous_m_stack_index);
+
+    // If this is a proxy, take its pointer to the origin
+    if (p_parent.is_proxy()) {
+      auto info = std::get<proxy_info>(p_parent.m_proxy);
+      m_proxy = proxy_info{
+        .origin = info.origin,
+        .parent = &p_parent,
+      };
+    } else {  // Otherwise, the current parent is the origin.
+      m_proxy = proxy_info{
+        .origin = &p_parent,
+        .parent = &p_parent,
+      };
+    }
+  }
+
+  [[nodiscard]] constexpr context* origin() noexcept
+  {
+    if (is_proxy()) {
+      return std::get<proxy_info>(m_proxy).origin;
+    }
+    return this;
+  }
+
+  [[nodiscard]] constexpr context const* origin() const noexcept
+  {
+    if (is_proxy()) {
+      return std::get<proxy_info>(m_proxy).origin;
+    }
+    return this;
+  }
+
+  constexpr void transition_to(
+    blocked_by p_new_state,
+    scheduler::block_info p_info = std::monostate{}) noexcept
+  {
+    auto origin_ptr = origin();
+    origin_ptr->m_state = p_new_state;
+    auto origin_scheduler = std::get<scheduler_t>(origin()->m_proxy);
+    origin_scheduler->schedule(*origin_ptr, p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
@@ -331,13 +427,22 @@ private:
     m_state = p_exception;
   }
 
-  // Should stay within a standard cache-line of 64 bytes (8 words)
-  mem::strong_ptr<scheduler> m_scheduler;                           // word 1-2
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 3
-  std::span<byte> m_stack{};                                        // word 4-5
-  usize m_stack_index{ 0uz };                                       // word 6
-  context_state m_state{ 0uz };                                     // word 7-8
+  using context_state = std::variant<usize, blocked_by, std::exception_ptr>;
+  using proxy_state = std::variant<proxy_info, mem::strong_ptr<scheduler>>;
+
+  // Should stay close to a standard cache-line of 64 bytes (8 words).
+  // Unfortunately we cannot achieve that if we want proxy support, so we must
+  // deal with that by putting the scheduler towards the end since it is the
+  // least hot part of the data.
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
+  std::span<byte> m_stack{};                                        // word 2-3
+  usize m_stack_index{ 0uz };                                       // word 4
+  context_state m_state{ 0uz };                                     // word 5-6
+  proxy_state m_proxy{ proxy_info{} };                              // word 7-9
 };
+
+static_assert(sizeof(context) <=
+              std::hardware_constructive_interference_size * 2);
 
 export class context_token
 {
@@ -413,8 +518,6 @@ public:
 private:
   std::uintptr_t m_context_address = 0U;
 };
-
-static_assert(sizeof(context) <= std::hardware_constructive_interference_size);
 
 // =============================================================================
 //
@@ -622,8 +725,7 @@ public:
   }
 
 private:
-  std::variant<monostate_or<T>, std::coroutine_handle<future_promise_type<T>>>*
-    m_value_address;
+  std::variant<monostate_or<T>, our_handle>* m_value_address;
   usize m_frame_size;
 };
 
@@ -717,7 +819,7 @@ class future
 public:
   using promise_type = future_promise_type<T>;
   friend promise_type;
-  using task_handle_type = std::coroutine_handle<promise_type>;
+  using handle_type = std::coroutine_handle<promise_type>;
 
   constexpr void resume() const
   {
@@ -782,12 +884,10 @@ public:
       // If the async object is being resumed and it has not destroyed itself
       // and been replaced with the result value, then there MUST be an
       // exception that needs to be propagated through the calling coroutine.
-      if (std::holds_alternative<task_handle_type>(m_operation->m_result))
+      if (std::holds_alternative<handle_type>(m_operation->m_result))
         [[unlikely]] {
         auto& context = m_operation->handle().promise().get_context();
-
         context.rethrow_if_exception_caught();
-
         /// NOTE: If this await_resume() is called via `co_await`, then the
         /// resources of the call will be cleaned up when then future is
         /// destroyed.
@@ -836,7 +936,7 @@ public:
   constexpr future(future&& p_other) noexcept
     : m_result(std::exchange(p_other.m_result, {}))
   {
-    if (std::holds_alternative<task_handle_type>(m_result)) {
+    if (std::holds_alternative<handle_type>(m_result)) {
       handle().promise().set_object_address(&m_result);
     }
   }
@@ -845,7 +945,7 @@ public:
   {
     if (this != &p_other) {
       m_result = std::exchange(p_other.m_result, {});
-      if (std::holds_alternative<task_handle_type>(m_result)) {
+      if (std::holds_alternative<handle_type>(m_result)) {
         handle().promise().set_object_address(&m_result);
       }
     }
@@ -854,7 +954,7 @@ public:
 
   constexpr ~future()
   {
-    if (std::holds_alternative<task_handle_type>(m_result)) {
+    if (std::holds_alternative<handle_type>(m_result)) {
       /// NOTE: This only occurs if the future was not completed before its
       /// future object was destroyed.
       handle().promise().self_destruct();
@@ -863,7 +963,7 @@ public:
 
   [[nodiscard]] auto handle() const
   {
-    return std::get<task_handle_type>(m_result);
+    return std::get<handle_type>(m_result);
   }
 
   void set_context(context& p_context)
@@ -874,14 +974,14 @@ public:
 private:
   friend promise_type;
 
-  explicit constexpr future(task_handle_type p_handle)
+  explicit constexpr future(handle_type p_handle)
     : m_result(p_handle)
   {
     auto& promise = p_handle.promise();
     promise.set_object_address(&m_result);
   }
 
-  std::variant<monostate_or<T>, task_handle_type> m_result;
+  std::variant<monostate_or<T>, handle_type> m_result;
 };
 
 template<typename T>
