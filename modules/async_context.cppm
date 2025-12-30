@@ -300,7 +300,7 @@ public:
 
   [[nodiscard]] constexpr bool is_proxy() const noexcept
   {
-    return std::holds_alternative<scheduler_t>(m_proxy);
+    return std::holds_alternative<proxy_info>(m_proxy);
   }
 
   context create_proxy()
@@ -310,16 +310,16 @@ public:
 
   ~context()
   {
-    if (std::holds_alternative<scheduler_t>(m_proxy)) {
-      using poly_allocator = std::pmr::polymorphic_allocator<byte>;
-      auto scheduler = std::get<scheduler_t>(m_proxy);
-      auto allocator = poly_allocator(&scheduler->get_allocator());
-      allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
-    } else {
+    if (is_proxy()) {
       auto* parent = std::get<proxy_info>(m_proxy).parent;
       // Unshrink parent stack, by setting its range to be the start of its
       // stack and the end to be the end of this stack.
       parent->m_stack = std::span(parent->m_stack.begin(), m_stack.end());
+    } else {
+      using poly_allocator = std::pmr::polymorphic_allocator<byte>;
+      auto scheduler = std::get<scheduler_t>(m_proxy);
+      auto allocator = poly_allocator(&scheduler->get_allocator());
+      allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
     }
 
     // We need to destroy the entire coroutine chain here!
@@ -399,10 +399,10 @@ private:
     blocked_by p_new_state,
     scheduler::block_info p_info = std::monostate{}) noexcept
   {
-    auto origin_ptr = origin();
+    auto* origin_ptr = origin();
     origin_ptr->m_state = p_new_state;
-    auto origin_scheduler = std::get<scheduler_t>(origin()->m_proxy);
-    origin_scheduler->schedule(*origin_ptr, p_new_state, p_info);
+    std::get<scheduler_t>(origin_ptr->m_proxy)
+      ->schedule(*origin_ptr, p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
