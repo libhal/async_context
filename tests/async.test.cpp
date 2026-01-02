@@ -284,50 +284,155 @@ void async_context_suite()
     expect(that % my_context2.state() == async::blocked_by::nothing);
     expect(that % access_second.done());
   };
+
+  "cancellations tests"_test = []() {
+    // Setup
+    auto scheduler =
+      mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+    async::context ctx(scheduler, 1024);
+
+    auto a = [](async::context& p_ctx) -> future<void> { co_return; };
+    auto b = [a](async::context& p_ctx) -> future<void> {
+      co_await a(p_ctx);
+      co_return;
+    };
+    auto c = [b](async::context& p_ctx) -> future<void> {
+      co_await b(p_ctx);
+      co_return;
+    };
+
+    {
+      auto future = c(ctx);
+      future.resume();
+      expect(that % 0 < ctx.memory_used());
+    }
+
+    expect(that % 0 == ctx.memory_used());
+  };
+
+  // TODO(#): Fix proxy coroutine tests
 #if 0
   "proxy coroutines"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context my_context1(scheduler, 1024);
+    std::println("====================================");
+    std::println("====================================");
 
-    auto b = [](async::context&, int p_suspend_count) -> future<int> {
-      while (p_suspend_count < 0) {
+    static constexpr auto expected_suspensions = 5;
+
+    [[maybe_unused]] auto b = [](async::context&,
+                                 int p_suspend_count) -> future<int> {
+      auto const result = p_suspend_count;
+      while (p_suspend_count > 0) {
         p_suspend_count--;
+        std::println("p_suspend_count = {}!", p_suspend_count);
         co_await std::suspend_always{};
       }
-      co_return 5;
+      co_return result;
     };
 
     auto a = [b](async::context& p_ctx) -> future<int> {
+      std::println("Entered coroutine a!");
       auto proxy = p_ctx.borrow_proxy();
-      static constexpr auto expected_suspensions = 5;
+      std::println("Made a proxy!");
+      int counter = expected_suspensions + 2;
       auto supervised_future = b(proxy, expected_suspensions);
 
-      int counter = expected_suspensions + 1;
-
       while (not supervised_future.done()) {
-        if (counter == 0) {
-          std::println("TIMEDOUT!");
+        std::println("supervised_future not done()!");
+        if (counter <= 0) {
+          std::println("TIMEDOUT detected!");
           break;
         }
+        std::println("resuming supervised_future...");
         supervised_future.resume();
+
+        std::println("suspending ourself...");
         co_await std::suspend_always{};
         counter--;
       }
 
+      std::println("finished while loop()!");
+
       if (counter > 0) {
+        std::println("✅ SUCCESS!");
         co_return supervised_future.sync_wait();
       }
+
+      std::println("TIMED OUT!!");
 
       co_return -1;
     };
 
     auto my_future = a(my_context1);
-    // auto value = my_future.sync_wait();
+    auto value = my_future.sync_wait();
 
     expect(that % my_future.done());
-    // expect(that % -1 == value);
+    expect(that % expected_suspensions == value);
+  };
+
+  "proxy coroutines timeout"_test = []() {
+    // Setup
+    auto scheduler =
+      mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+    async::context my_context1(scheduler, 1024);
+    std::println("====================================");
+    std::println("====================================");
+
+    static constexpr auto expected_suspensions = 5;
+
+    [[maybe_unused]] auto b = [](async::context&,
+                                 int p_suspend_count) -> future<int> {
+      auto const result = p_suspend_count;
+      while (p_suspend_count > 0) {
+        p_suspend_count--;
+        std::println("p_suspend_count = {}!", p_suspend_count);
+        co_await std::suspend_always{};
+      }
+      co_return result;
+    };
+
+    auto a = [b](async::context& p_ctx) -> future<int> {
+      std::println("Entered coroutine a!");
+      auto proxy = p_ctx.borrow_proxy();
+      std::println("Made a proxy!");
+      int counter = expected_suspensions - 2;
+      auto supervised_future = b(proxy, expected_suspensions);
+
+      while (not supervised_future.done()) {
+        std::println("supervised_future not done()!");
+        if (counter <= 0) {
+          std::println("TIMEDOUT detected!");
+          break;
+        }
+        std::println("resuming supervised_future...");
+        supervised_future.resume();
+
+        std::println("suspending ourself...");
+        co_await std::suspend_always{};
+        counter--;
+      }
+
+      std::println("finished while loop()!");
+
+      if (counter > 0) {
+        std::println("✅ SUCCESS!");
+        co_return supervised_future.sync_wait();
+      }
+
+      std::println("‼️ TIMED OUT!!");
+
+      co_return -1;
+    };
+
+    auto my_future = a(my_context1);
+    auto value = my_future.sync_wait();
+
+    expect(that % my_future.done());
+    expect(that % -1 == value);
+    expect(that % my_context1.memory_used() == my_context1.capacity());
   };
 #endif
 };

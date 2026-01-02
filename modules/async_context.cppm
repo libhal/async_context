@@ -173,6 +173,31 @@ private:
   virtual std::pmr::memory_resource& do_get_allocator() noexcept = 0;
 };
 
+export constexpr mem::strong_ptr<scheduler> noop_scheduler()
+{
+  struct noop_scheduler : scheduler
+  {
+    void do_schedule(context&, blocked_by, block_info) noexcept override
+    {
+      return;
+    }
+
+    std::pmr::memory_resource& do_get_allocator() noexcept override
+    {
+      std::terminate();
+    }
+  };
+
+  static noop_scheduler sched;
+
+  return mem::strong_ptr(mem::unsafe_assume_static_tag{}, sched);
+}
+
+struct noop_context_tag
+{};
+
+class promise_base;
+
 export class context
 {
 public:
@@ -314,7 +339,7 @@ public:
   ~context()
   {
     // We need to destroy the entire coroutine chain here!
-    cancel();
+    // cancel();
 
     if (is_proxy()) {
       auto* parent = std::get<proxy_info>(m_proxy).parent;
@@ -333,6 +358,8 @@ private:
   friend class promise_base;
   template<typename T>
   friend class future_promise_type;
+
+  friend constexpr context& noop_context();
 
   struct proxy_info
   {
@@ -380,6 +407,13 @@ private:
         .parent = &p_parent,
       };
     }
+  }
+
+  context(noop_context_tag)
+    : m_active_handle(std::noop_coroutine())
+    , m_state(0uz)
+    , m_proxy(noop_scheduler())
+  {
   }
 
   [[nodiscard]] constexpr context* origin() noexcept
@@ -446,6 +480,12 @@ private:
 
 static_assert(sizeof(context) <=
               std::hardware_constructive_interference_size * 2);
+
+export constexpr context& noop_context()
+{
+  static context noop(noop_context_tag{});
+  return noop;
+}
 
 export class context_token
 {
@@ -642,7 +682,7 @@ public:
 protected:
   // Storage for the coroutine result/error
   std::coroutine_handle<> m_continuation = std::noop_coroutine();
-  class context* m_context;
+  class context* m_context = nullptr;
 };
 
 export template<typename T>
@@ -655,6 +695,8 @@ public:
   using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
   using our_handle = std::coroutine_handle<future_promise_type<T>>;
+
+  friend class future<T>;
 
   // Add regular delete operators for normal coroutine destruction
   static constexpr void operator delete(void*) noexcept
@@ -711,26 +753,16 @@ public:
   void return_value(U&& p_value) noexcept
     requires std::is_constructible_v<T, U&&>
   {
-    m_value_address->template emplace<T>(std::forward<U>(p_value));
-    self_destruct();
+    m_value_address->emplace(std::forward<U>(p_value));
   }
 
-  void set_object_address(
-    std::variant<monostate_or<T>, our_handle>* p_value_address)
+  ~future_promise_type()
   {
-    m_value_address = p_value_address;
-  }
-
-  void self_destruct()
-  {
-    auto* const context = m_context;
-    auto handle = our_handle::from_promise(*this);
-    handle.destroy();
-    context->deallocate(m_frame_size);
+    m_context->deallocate(m_frame_size);
   }
 
 private:
-  std::variant<monostate_or<T>, our_handle>* m_value_address;
+  std::optional<T>* m_value_address;
   usize m_frame_size;
 };
 
@@ -742,19 +774,13 @@ public:
   using promise_base::promise_base;
   using promise_base::operator new;
   using our_handle = std::coroutine_handle<future_promise_type<void>>;
+  friend class future<void>;
 
   future_promise_type();
 
-  void set_object_address(
-    std::variant<monostate_or<void>, our_handle>* p_value_address)
-  {
-    m_value_address = p_value_address;
-  }
-
   constexpr void return_void() noexcept
   {
-    *m_value_address = std::monostate{};
-    self_destruct();
+    // Do nothing
   }
 
   constexpr future<void> get_return_object() noexcept;
@@ -805,26 +831,30 @@ public:
     m_context->set_exception(std::current_exception());
   }
 
-  void self_destruct()
+  ~future_promise_type()
   {
-    auto* const context = m_context;
-    auto handle = our_handle::from_promise(*this);
-    handle.destroy();
-    context->deallocate(m_frame_size);
+    m_context->deallocate(m_frame_size);
   }
 
 private:
-  std::variant<monostate_or<void>, our_handle>* m_value_address = nullptr;
   usize m_frame_size = 0;
 };
 
+// TODO(kammce): specialize against future<void> to eliminate optional member
+// variable
 export template<typename T>
 class future
 {
 public:
   using promise_type = future_promise_type<T>;
   friend promise_type;
-  using handle_type = std::coroutine_handle<promise_type>;
+  using handle_type = std::coroutine_handle<>;
+  using future_handle_type = std::coroutine_handle<promise_type>;
+
+  [[nodiscard]] constexpr auto handle() const
+  {
+    return future_handle_type::from_address(m_handle.address());
+  }
 
   constexpr void resume() const
   {
@@ -845,7 +875,7 @@ public:
     // OR
     // If the coroutine is valid, then check if it has suspended at its final
     // suspension point.
-    return std::holds_alternative<monostate_or<T>>(m_result);
+    return m_result.value();
   }
 
   /**
@@ -855,9 +885,10 @@ public:
    *
    * @return Type - reference to the value from this async operation.
    */
-  [[nodiscard]] constexpr monostate_or<T>& result()
+  [[nodiscard]] constexpr std::optional<T>& result()
+    requires(not std::is_void_v<T>)
   {
-    return std::get<monostate_or<T>>(m_result);
+    return m_result;
   }
 
   // Awaiter for when this task is awaited
@@ -875,29 +906,23 @@ public:
       return m_operation->done();
     }
 
-    // Generic await_suspend for any promise type
-    template<typename Promise>
+    // TODO(): make this actually typed to future promise
     std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<Promise> p_continuation) noexcept
+      handle_type p_calling_coroutine) noexcept
     {
-      m_operation->handle().promise().continuation(p_continuation);
-      return m_operation->handle();
+      m_operation->handle().promise().continuation(p_calling_coroutine);
+      return m_operation->m_handle;
     }
 
     constexpr monostate_or<T>& await_resume() const
     {
-      // If the async object is being resumed and it has not destroyed itself
-      // and been replaced with the result value, then there MUST be an
-      // exception that needs to be propagated through the calling coroutine.
-      if (std::holds_alternative<handle_type>(m_operation->m_result))
-        [[unlikely]] {
-        auto& context = m_operation->handle().promise().get_context();
-        context.rethrow_if_exception_caught();
-        /// NOTE: If this await_resume() is called via `co_await`, then the
-        /// resources of the call will be cleaned up when then future is
-        /// destroyed.
-      }
-      return m_operation->result();
+      m_operation->handle()
+        .promise()
+        .get_context()
+        .rethrow_if_exception_caught();
+
+      // ⚠️ unchecked optional access for performance
+      return *m_operation->m_result;
     }
   };
 
@@ -932,95 +957,237 @@ public:
   constexpr future(U&& p_value) noexcept
     requires(not std::is_void_v<T>)
   {
-    m_result.template emplace<T>(std::forward<U>(p_value));
+    m_handle = std::noop_coroutine();
+    m_result.emplace(std::forward<U>(p_value));
   };
 
   future(future const& p_other) = delete;
   future& operator=(future const& p_other) = delete;
 
   constexpr future(future&& p_other) noexcept
-    : m_result(std::exchange(p_other.m_result, {}))
+    : m_handle(p_other.m_handle)
   {
-    if (std::holds_alternative<handle_type>(m_result)) {
-      handle().promise().set_object_address(&m_result);
+    if constexpr (not std::is_void_v<T>) {
+      handle().promise().m_value_address = &m_result;
     }
   }
 
   constexpr future& operator=(future&& p_other) noexcept
   {
     if (this != &p_other) {
-      m_result = std::exchange(p_other.m_result, {});
-      if (std::holds_alternative<handle_type>(m_result)) {
-        handle().promise().set_object_address(&m_result);
+      m_handle = p_other.m_handle;
+      if constexpr (not std::is_void_v<T>) {
+        handle().promise().m_value_address = &m_result;
       }
     }
     return *this;
   }
 
-  // TODO(#31): Implement! Doesn't do anything yet.
   void cancel()
   {
-    if (std::holds_alternative<handle_type>(m_result)) {
-      handle().promise().destroy();
+    // TODO(#31): Implement! Properly
+    if (m_handle != std::noop_coroutine() && not m_handle.done()) {
+#if 1
+      auto& context = handle().promise().get_context();
+      auto active_handle = context.active_handle();
+      while (m_handle != active_handle) {
+        // This can only be a future<T> or noop_coroutine
+        future_handle_type::from_address(active_handle.address())
+          .promise()
+          .pop_active_coroutine();
+        active_handle.destroy();
+        // Get the next active coroutine handle
+        active_handle = context.active_handle();
+      }
+      m_handle.destroy();
+#endif
     }
   }
 
   constexpr ~future()
   {
-    if (std::holds_alternative<handle_type>(m_result)) {
-      /// NOTE: This only occurs if the future was not completed before its
-      /// future object was destroyed.
-      handle().promise().self_destruct();
+    cancel();
+  }
+
+private:
+  friend promise_type;
+
+  explicit constexpr future(future_handle_type p_handle)
+    : m_handle(p_handle)
+  {
+    auto& promise = p_handle.promise();
+    if constexpr (not std::is_void_v<T>) {
+      promise.m_value_address = &m_result;
     }
   }
 
-  [[nodiscard]] auto handle() const
+  handle_type m_handle = std::noop_coroutine();
+  std::optional<monostate_or<T>> m_result;
+};
+
+template<typename T>
+constexpr future<T> future_promise_type<T>::get_return_object() noexcept
+{
+  using future_handle = std::coroutine_handle<future_promise_type<T>>;
+  auto handle = future_handle::from_promise(*this);
+  m_context->active_handle(handle);
+  // Retrieve the frame size and store it for deallocation on destruction
+  m_frame_size = m_context->last_allocation_size();
+  return future<T>{ handle };
+}
+
+export template<>
+class future<void>
+{
+public:
+  using promise_type = future_promise_type<void>;
+  friend promise_type;
+  using handle_type = std::coroutine_handle<>;
+  using future_handle_type = std::coroutine_handle<promise_type>;
+
+  [[nodiscard]] constexpr auto handle() const
   {
-    return std::get<handle_type>(m_result);
+    return future_handle_type::from_address(m_handle.address());
   }
 
-  void set_context(context& p_context)
+  constexpr void resume() const
   {
-    handle().promise().context() = p_context;
+    handle().promise().get_context().active_handle().resume();
+  }
+
+  /**
+   * @brief Reports if this async object has finished its operation and now
+   * contains a value.
+   *
+   * @return true - operation finished and the response can be acquired by
+   * `result()`
+   * @return false - operation has yet to completed and does have a value.
+   */
+  [[nodiscard]] constexpr bool done() const
+  {
+    // True if the handle isn't valid
+    // OR
+    // If the coroutine is valid, then check if it has suspended at its final
+    // suspension point.
+    return m_handle == std::noop_coroutine() || m_handle.done();
+  }
+
+  // Awaiter for when this task is awaited
+  struct awaiter
+  {
+    future<void>* m_operation;
+
+    constexpr explicit awaiter(future<void>* p_operation) noexcept
+      : m_operation(p_operation)
+    {
+    }
+
+    [[nodiscard]] constexpr bool await_ready() const noexcept
+    {
+      return m_operation->done();
+    }
+
+    // TODO(): make this actually typed to future promise
+    std::coroutine_handle<> await_suspend(
+      handle_type p_calling_coroutine) noexcept
+    {
+      m_operation->handle().promise().continuation(p_calling_coroutine);
+      return m_operation->m_handle;
+    }
+
+    constexpr void await_resume() const
+    {
+      m_operation->handle()
+        .promise()
+        .get_context()
+        .rethrow_if_exception_caught();
+    }
+  };
+
+  [[nodiscard]] constexpr awaiter operator co_await() noexcept
+  {
+    return awaiter{ this };
+  }
+
+  // Run synchronously and return result
+  void sync_wait()
+  {
+    // Perform await operation manually and synchonously
+    auto manual_awaiter = awaiter{ this };
+
+    // Check if our awaiter is not ready and if so, run it until it finishes
+    if (not manual_awaiter.await_ready()) {
+      auto& context = handle().promise().get_context();
+      context.sync_wait();
+    }
+
+    // This thread of execution has completed now we can return the result
+    manual_awaiter.await_resume();
+  }
+
+  future(future const& p_other) = delete;
+  future& operator=(future const& p_other) = delete;
+
+  constexpr future(future&& p_other) noexcept
+    : m_handle(p_other.m_handle)
+  {
+    p_other.m_handle = std::noop_coroutine();
+  }
+
+  constexpr future& operator=(future&& p_other) noexcept
+  {
+    if (this != &p_other) {
+      m_handle = p_other.m_handle;
+      p_other.m_handle = std::noop_coroutine();
+    }
+    return *this;
+  }
+
+  void cancel()
+  {
+    // TODO(#31): Implement! Properly
+    if (not done()) {
+#if 1
+      auto& context = handle().promise().get_context();
+      auto active_handle = context.active_handle();
+      // Keep destroying coroutines until we find our handle
+      while (m_handle != active_handle) {
+        future_handle_type::from_address(active_handle.address())
+          .promise()
+          .pop_active_coroutine();
+        active_handle.destroy();
+        // Get the next active coroutine handle
+        active_handle = context.active_handle();
+      }
+      m_handle.destroy();
+#endif
+    }
+  }
+
+  constexpr ~future()
+  {
+    cancel();
   }
 
 private:
   friend promise_type;
 
   explicit constexpr future(handle_type p_handle)
-    : m_result(p_handle)
+    : m_handle(p_handle)
   {
-    auto& promise = p_handle.promise();
-    promise.set_object_address(&m_result);
   }
 
-  std::variant<monostate_or<T>, handle_type> m_result;
+  handle_type m_handle = std::noop_coroutine();
 };
-
-template<typename T>
-constexpr future<T> future_promise_type<T>::get_return_object() noexcept
-{
-  auto handle =
-    std::coroutine_handle<future_promise_type<T>>::from_promise(*this);
-  m_context->active_handle(handle);
-  // Save the allocation size of this promise type
-  m_frame_size = m_context->last_allocation_size();
-  // Set state to blocked_by::nothing
-  m_context->unblock_without_notification();
-  return future<T>{ handle };
-}
 
 inline constexpr future<void>
 future_promise_type<void>::get_return_object() noexcept
 {
-  auto handle =
-    std::coroutine_handle<future_promise_type<void>>::from_promise(*this);
+  using future_handle = std::coroutine_handle<future_promise_type<void>>;
+  auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
-  // Copy the last allocation size before changing the representation of
-  // m_state to 'blocked_by::nothing'.
+  // Retrieve the frame size and store it for deallocation on destruction
   m_frame_size = m_context->last_allocation_size();
-  // Set state to blocked_by::nothing
-  m_context->unblock_without_notification();
   return future<void>{ handle };
 }
 

@@ -90,7 +90,11 @@ else()
         -Wextra
         -Wshadow
         -fexceptions
+        -fsanitize=address
         -fno-rtti)
+
+    target_link_options(async_unit_test PRIVATE
+        -fsanitize=address)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
