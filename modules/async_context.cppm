@@ -259,11 +259,13 @@ public:
     }
   }
 
+  // TODO(#31): Implement! Doesn't do anything yet.
   void cancel()
   {
-    if (m_active_handle != std::noop_coroutine()) {
-      // TODO(): Implement! Doesn't do anything yet.
+    while (m_active_handle != std::noop_coroutine()) {
+      m_active_handle.destroy();
     }
+    m_stack_index = 0;
   }
 
   [[nodiscard]] constexpr auto memory_used() const noexcept
@@ -303,13 +305,17 @@ public:
     return std::holds_alternative<proxy_info>(m_proxy);
   }
 
-  context create_proxy()
+  context borrow_proxy() && = delete;
+  context borrow_proxy() &
   {
     return { proxy_tag{}, *this };
   }
 
   ~context()
   {
+    // We need to destroy the entire coroutine chain here!
+    cancel();
+
     if (is_proxy()) {
       auto* parent = std::get<proxy_info>(m_proxy).parent;
       // Unshrink parent stack, by setting its range to be the start of its
@@ -321,9 +327,6 @@ public:
       auto allocator = poly_allocator(&scheduler->get_allocator());
       allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
     }
-
-    // We need to destroy the entire coroutine chain here!
-    cancel();
   };
 
 private:
@@ -490,6 +493,8 @@ public:
     return in_use();
   }
 
+  // TODO(#29): Lease should return a guard variable that, on destruction,
+  // unblocks and clear itself.
   constexpr void lease(context& p_capture) noexcept
   {
     m_context_address = std::bit_cast<std::uintptr_t>(&p_capture);
@@ -952,6 +957,14 @@ public:
     return *this;
   }
 
+  // TODO(#31): Implement! Doesn't do anything yet.
+  void cancel()
+  {
+    if (std::holds_alternative<handle_type>(m_result)) {
+      handle().promise().destroy();
+    }
+  }
+
   constexpr ~future()
   {
     if (std::holds_alternative<handle_type>(m_result)) {
@@ -990,10 +1003,9 @@ constexpr future<T> future_promise_type<T>::get_return_object() noexcept
   auto handle =
     std::coroutine_handle<future_promise_type<T>>::from_promise(*this);
   m_context->active_handle(handle);
-  // Copy the last allocation size before changing the representation of
-  // m_state to 'blocked_by::nothing'.
+  // Save the allocation size of this promise type
   m_frame_size = m_context->last_allocation_size();
-  // Now stomp the union out and set it to the blocked_by::nothing state.
+  // Set state to blocked_by::nothing
   m_context->unblock_without_notification();
   return future<T>{ handle };
 }
@@ -1007,7 +1019,7 @@ future_promise_type<void>::get_return_object() noexcept
   // Copy the last allocation size before changing the representation of
   // m_state to 'blocked_by::nothing'.
   m_frame_size = m_context->last_allocation_size();
-  // Now stomp the union out and set it to the blocked_by::nothing state.
+  // Set state to blocked_by::nothing
   m_context->unblock_without_notification();
   return future<void>{ handle };
 }

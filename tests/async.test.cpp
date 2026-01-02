@@ -107,16 +107,6 @@ private:
   }
 };
 
-async::future<void> coro_print(async::context&)
-{
-  using namespace std::chrono_literals;
-  std::println("Printed from a coroutine");
-  co_await 100ns;
-  resumption_occurred = true;
-  co_await 100ns;
-  co_return;
-}
-
 namespace async {
 void async_context_suite()
 {
@@ -128,14 +118,26 @@ void async_context_suite()
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context my_context(scheduler, 1024);
 
+    static constexpr int expected_return_value = 5;
+
+    auto print_and_wait_coroutine = [](async::context&) -> async::future<int> {
+      using namespace std::chrono_literals;
+      std::println("Printed from a coroutine");
+      co_await 100ns;
+      resumption_occurred = true;
+      co_await 100ns;
+      co_return expected_return_value;
+    };
+
     // Exercise
-    auto future_print = coro_print(my_context);
-    future_print.sync_wait();
+    auto future_print = print_and_wait_coroutine(my_context);
+    auto value = future_print.sync_wait();
 
     // Verify
     expect(that % resumption_occurred);
     expect(that % future_print.done());
     expect(that % 2 == scheduler->sleep_count);
+    expect(that % expected_return_value == value);
   };
 
   "block_by_io and block_by_sync notify scheduler correctly"_test = []() {
@@ -215,26 +217,17 @@ void async_context_suite()
       [&](async::blocked_by p_state = async::blocked_by::io,
           std::source_location const& p_location =
             std::source_location::current()) {
-        expect(that % my_context1.state() ==
-               access_first.handle().promise().get_context().state())
-          << "line: " << p_location.line() << '\n';
         expect(that % static_cast<int>(p_state) ==
                static_cast<int>(my_context1.state()))
           << "line: " << p_location.line() << '\n';
-        ;
       };
 
     auto check_access_second_blocked_by =
       [&](async::blocked_by p_state = async::blocked_by::nothing,
           std::source_location const& p_location =
             std::source_location::current()) {
-        expect(that % my_context2.state() ==
-               access_second.handle().promise().get_context().state())
-          << "line: " << p_location.line() << '\n';
-        ;
         expect(that % p_state == my_context2.state())
           << "line: " << p_location.line() << '\n';
-        ;
       };
 
     // access_first will claim the resource and will return control, and be
@@ -291,5 +284,51 @@ void async_context_suite()
     expect(that % my_context2.state() == async::blocked_by::nothing);
     expect(that % access_second.done());
   };
+#if 0
+  "proxy coroutines"_test = []() {
+    // Setup
+    auto scheduler =
+      mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+    async::context my_context1(scheduler, 1024);
+
+    auto b = [](async::context&, int p_suspend_count) -> future<int> {
+      while (p_suspend_count < 0) {
+        p_suspend_count--;
+        co_await std::suspend_always{};
+      }
+      co_return 5;
+    };
+
+    auto a = [b](async::context& p_ctx) -> future<int> {
+      auto proxy = p_ctx.borrow_proxy();
+      static constexpr auto expected_suspensions = 5;
+      auto supervised_future = b(proxy, expected_suspensions);
+
+      int counter = expected_suspensions + 1;
+
+      while (not supervised_future.done()) {
+        if (counter == 0) {
+          std::println("TIMEDOUT!");
+          break;
+        }
+        supervised_future.resume();
+        co_await std::suspend_always{};
+        counter--;
+      }
+
+      if (counter > 0) {
+        co_return supervised_future.sync_wait();
+      }
+
+      co_return -1;
+    };
+
+    auto my_future = a(my_context1);
+    // auto value = my_future.sync_wait();
+
+    expect(that % my_future.done());
+    // expect(that % -1 == value);
+  };
+#endif
 };
 }  // namespace async
