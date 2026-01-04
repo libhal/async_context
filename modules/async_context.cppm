@@ -96,6 +96,14 @@ export struct bad_coroutine_alloc : std::bad_alloc
   context const* violator;
 };
 
+export class operation_cancelled : public std::exception
+{
+  [[nodiscard]] char const* what() const noexcept override
+  {
+    return "An async::context ran out of memory!";
+  }
+};
+
 // =============================================================================
 //
 // Context
@@ -677,11 +685,12 @@ struct cancelled_state
  * this future.
  */
 export template<typename T>
-using future_state = std::variant<monostate_or<T>,
-                                  std::coroutine_handle<>,
-                                  cancelled_state,
-                                  std::exception_ptr>;
-
+using future_state =
+  std::variant<std::coroutine_handle<>,  // 0 - running (the suspend case)
+               monostate_or<T>,          // 1 - value (happy path!)
+               cancelled_state,          // 2 - cancelled
+               std::exception_ptr        // 3 - exception
+               >;
 template<class Promise>
 struct final_awaiter
 {
@@ -877,7 +886,7 @@ public:
 
     [[nodiscard]] constexpr bool await_ready() const noexcept
     {
-      return m_operation.done();
+      return m_operation.m_state.index() >= 1;
     }
 
     std::coroutine_handle<> await_suspend(
@@ -897,20 +906,27 @@ public:
     constexpr monostate_or<T>& await_resume() const
       requires(not std::is_void_v<T>)
     {
-      if (auto* ex = std::get_if<std::exception_ptr>(&m_operation.m_state))
-        [[unlikely]] {
-        std::rethrow_exception(*ex);
+      // Combined with await_ready's `>= 1`, this becomes `== 1`
+      if (m_operation.m_state.index() < 2) [[likely]] {
+        return *std::get_if<1>(&m_operation.m_state);
       }
-      return std::get<T>(m_operation.m_state);
+      // index >= 2, error territory
+      if (m_operation.m_state.index() == 3) {
+        std::rethrow_exception(*std::get_if<3>(&m_operation.m_state));
+      }
+      throw operation_cancelled{};
     }
 
     constexpr void await_resume() const
       requires(std::is_void_v<T>)
     {
-      if (auto* ex = std::get_if<std::exception_ptr>(&m_operation.m_state))
-        [[unlikely]] {
-        std::rethrow_exception(*ex);
+      if (m_operation.m_state.index() < 2) [[likely]] {
+        return;
       }
+      if (m_operation.m_state.index() == 3) {
+        std::rethrow_exception(*std::get_if<3>(&m_operation.m_state));
+      }
+      throw operation_cancelled{};
     }
   };
 
