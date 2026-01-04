@@ -67,11 +67,10 @@ install(
 # Unit testing
 # ==============================================================================
 
-find_package(ut REQUIRED)
-
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    find_package(ut REQUIRED)
     message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
     # Add module files
@@ -111,11 +110,11 @@ add_custom_target(copy_compile_commands ALL
 # Benchmarking
 # ==============================================================================
 
-find_package(benchmark REQUIRED)
 
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping benchmarks")
 else()
+    find_package(benchmark REQUIRED)
     message(STATUS "Building benchmarks tests!")
     add_executable(async_benchmark)
     target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)

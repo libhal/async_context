@@ -49,7 +49,6 @@ void escape(T&& val)
   benchmark::DoNotOptimize(val);
 }
 
-#if 0
 // ----------------------------------------------------------------------------
 // 1. BASELINE: Direct returns, 3 levels deep
 // ----------------------------------------------------------------------------
@@ -78,10 +77,9 @@ static void BM_DirectReturn(benchmark::State& state)
   }
 }
 BENCHMARK(BM_DirectReturn);
-#endif
 
 // ----------------------------------------------------------------------------
-// 2. VIRTUAL CALLS: Indirect function calls, 3 levels deep
+// 2.0 VIRTUAL CALLS: Indirect function calls, 3 levels deep
 // ----------------------------------------------------------------------------
 
 struct VirtualBase
@@ -138,6 +136,98 @@ static void BM_VirtualCall(benchmark::State& state)
   }
 }
 BENCHMARK(BM_VirtualCall);
+
+// ---------------------------------------------------------------------------
+// 2.1. VIRTUAL CALLS – variant return type
+// ---------------------------------------------------------------------------
+
+struct VirtualBaseVariant
+{
+  // Return a variant that holds the integer result.
+  virtual async::future_state<int> compute(int x) = 0;
+  virtual ~VirtualBaseVariant() noexcept = default;
+};
+
+struct VirtualLevel3Variant : VirtualBaseVariant
+{
+  async::future_state<int> compute(int x) override
+  {
+    // For this benchmark we never use the coroutine‑handle or the
+    // cancelled_state – only the normal value.
+    return async::future_state<int>{ x * 2 };
+  }
+};
+
+struct VirtualLevel2Variant : VirtualBaseVariant
+{
+  explicit VirtualLevel2Variant(VirtualBaseVariant* next) noexcept
+    : m_next(next)
+  {
+  }
+
+  async::future_state<int> compute(int x) override
+  {
+    // Forward the call to the next level and add 1.
+    auto res = m_next->compute(x);
+    // `res` is a variant; we only care about the int case here.
+    // The overhead of `std::get<int>(res)` is what we want to
+    // measure.  If the value case is not present we simply return it.
+    if (auto* p = std::get_if<int>(&res)) {
+      *p += 1;
+    }
+    return res;
+  }
+
+  VirtualBaseVariant* m_next;
+};
+
+struct VirtualLevel1Variant : VirtualBaseVariant
+{
+  explicit VirtualLevel1Variant(VirtualBaseVariant* next) noexcept
+    : m_next(next)
+  {
+  }
+
+  async::future_state<int> compute(int x) override
+  {
+    auto res = m_next->compute(x);
+    if (auto* p = std::get_if<int>(&res)) {
+      *p += 1;
+    }
+    return res;
+  }
+
+  VirtualBaseVariant* m_next;
+};
+
+static void BM_VirtualCallVariant(benchmark::State& state)
+{
+  VirtualLevel3Variant level3;
+  VirtualLevel2Variant level2(&level3);
+  VirtualLevel1Variant level1(&level2);
+  VirtualBaseVariant* base = &level1;
+
+  int input = 42;
+  for (auto _ : state) {
+    // The returned variant is immediately inspected to extract the
+    // integer value – this mirrors what your coroutine code does
+    // when it needs to "resume" a finished future.
+    auto res = base->compute(input);
+    int value;
+    if (auto* p = std::get_if<int>(&res)) {
+      value = *p;
+    } else if (auto* exception = std::get_if<std::exception_ptr>(&res)) {
+      // In the benchmark we never throw, but this makes the
+      // code more realistic.
+      std::rethrow_exception(*exception);
+    } else {
+      // Should never happen in this test.
+      value = 0;
+    }
+    escape(value);
+  }
+}
+BENCHMARK(BM_VirtualCallVariant);
 
 // ----------------------------------------------------------------------------
 // 3. FUTURE SYNC: Non-coroutine functions returning future<int>, 3 levels deep
@@ -392,97 +482,5 @@ static void BM_FutureVoidCoroutine(benchmark::State& state)
 }
 BENCHMARK(BM_FutureVoidCoroutine);
 
-// ---------------------------------------------------------------------------
-// 8. VIRTUAL CALLS – variant return type
-// ---------------------------------------------------------------------------
-
-struct VirtualBaseVariant
-{
-  // Return a variant that holds the integer result.
-  virtual async::future_state<int> compute(int x) = 0;
-  virtual ~VirtualBaseVariant() noexcept = default;
-};
-
-struct VirtualLevel3Variant : VirtualBaseVariant
-{
-  async::future_state<int> compute(int x) override
-  {
-    // For this benchmark we never use the coroutine‑handle or the
-    // cancelled_state – only the normal value.
-    return async::future_state<int>{ x * 2 };
-  }
-};
-
-struct VirtualLevel2Variant : VirtualBaseVariant
-{
-  explicit VirtualLevel2Variant(VirtualBaseVariant* next) noexcept
-    : m_next(next)
-  {
-  }
-
-  async::future_state<int> compute(int x) override
-  {
-    // Forward the call to the next level and add 1.
-    auto res = m_next->compute(x);
-    // `res` is a variant; we only care about the int case here.
-    // The overhead of `std::get<int>(res)` is what we want to
-    // measure.  If the value case is not present we simply return it.
-    if (auto* p = std::get_if<int>(&res)) {
-      *p += 1;
-    }
-    return res;
-  }
-
-  VirtualBaseVariant* m_next;
-};
-
-struct VirtualLevel1Variant : VirtualBaseVariant
-{
-  explicit VirtualLevel1Variant(VirtualBaseVariant* next) noexcept
-    : m_next(next)
-  {
-  }
-
-  async::future_state<int> compute(int x) override
-  {
-    auto res = m_next->compute(x);
-    if (auto* p = std::get_if<int>(&res)) {
-      *p += 1;
-    }
-    return res;
-  }
-
-  VirtualBaseVariant* m_next;
-};
-
-static void BM_VirtualCallVariant(benchmark::State& state)
-{
-  VirtualLevel3Variant level3;
-  VirtualLevel2Variant level2(&level3);
-  VirtualLevel1Variant level1(&level2);
-  VirtualBaseVariant* base = &level1;
-
-  int input = 42;
-  for (auto _ : state) {
-    // The returned variant is immediately inspected to extract the
-    // integer value – this mirrors what your coroutine code does
-    // when it needs to "resume" a finished future.
-    auto res = base->compute(input);
-    int value;
-    if (auto* p = std::get_if<int>(&res)) {
-      value = *p;
-    } else if (auto* exception = std::get_if<std::exception_ptr>(&res)) {
-      // In the benchmark we never throw, but this makes the
-      // code more realistic.
-      std::rethrow_exception(*exception);
-    } else {
-      // Should never happen in this test.
-      value = 0;
-    }
-    escape(value);
-  }
-}
-BENCHMARK(BM_VirtualCallVariant);
-// NOLINTEND(readability-identifier-naming)
-
 BENCHMARK_MAIN();
+// NOLINTEND(readability-identifier-naming)
