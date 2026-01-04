@@ -357,7 +357,7 @@ public:
 private:
   friend class promise_base;
   template<typename T>
-  friend class promise_type;
+  friend class promise;
 
   struct proxy_info
   {
@@ -676,7 +676,7 @@ struct cancelled_state
  * @tparam T - the type for the future to eventually provide to the owner of
  * this future.
  */
-template<typename T>
+export template<typename T>
 using future_state = std::variant<monostate_or<T>,
                                   std::coroutine_handle<>,
                                   cancelled_state,
@@ -714,12 +714,12 @@ struct final_awaiter
 };
 
 export template<typename T>
-class promise_type : public promise_base
+class promise : public promise_base
 {
 public:
   using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
-  using our_handle = std::coroutine_handle<promise_type<T>>;
+  using our_handle = std::coroutine_handle<promise<T>>;
 
   friend class future<T>;
 
@@ -732,7 +732,7 @@ public:
   {
   }
 
-  constexpr final_awaiter<promise_type<T>> final_suspend() noexcept
+  constexpr final_awaiter<promise<T>> final_suspend() noexcept
   {
     return {};
   }
@@ -752,7 +752,7 @@ public:
     m_future_state->template emplace<T>(std::forward<U>(p_value));
   }
 
-  ~promise_type()
+  ~promise()
   {
     m_context->deallocate(m_frame_size);
   }
@@ -763,12 +763,12 @@ protected:
 };
 
 export template<>
-class promise_type<void> : public promise_base
+class promise<void> : public promise_base
 {
 public:
   using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
-  using our_handle = std::coroutine_handle<promise_type<void>>;
+  using our_handle = std::coroutine_handle<promise<void>>;
 
   friend class future<void>;
 
@@ -781,7 +781,7 @@ public:
   {
   }
 
-  constexpr final_awaiter<promise_type<void>> final_suspend() noexcept
+  constexpr final_awaiter<promise<void>> final_suspend() noexcept
   {
     return {};
   }
@@ -798,7 +798,7 @@ public:
     *m_future_state = std::monostate{};
   }
 
-  ~promise_type()
+  ~promise()
   {
     m_context->deallocate(m_frame_size);
   }
@@ -812,8 +812,7 @@ export template<typename T>
 class future
 {
 public:
-  using promise_type = promise_type<T>;
-  friend promise_type;
+  using promise_type = promise<T>;
   using handle_type = std::coroutine_handle<>;
   using full_handle_type = std::coroutine_handle<promise_type>;
 
@@ -1029,9 +1028,9 @@ private:
 };
 
 template<typename T>
-constexpr future<T> promise_type<T>::get_return_object() noexcept
+constexpr future<T> promise<T>::get_return_object() noexcept
 {
-  using future_handle = std::coroutine_handle<promise_type<T>>;
+  using future_handle = std::coroutine_handle<promise<T>>;
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
   // Retrieve the frame size and store it for deallocation on destruction
@@ -1039,9 +1038,9 @@ constexpr future<T> promise_type<T>::get_return_object() noexcept
   return future<T>{ handle };
 }
 
-inline constexpr future<void> promise_type<void>::get_return_object() noexcept
+inline constexpr future<void> promise<void>::get_return_object() noexcept
 {
-  using future_handle = std::coroutine_handle<promise_type<void>>;
+  using future_handle = std::coroutine_handle<promise<void>>;
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
   // Retrieve the frame size and store it for deallocation on destruction

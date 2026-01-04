@@ -461,8 +461,7 @@ void async_context_suite()
 
     ctx.unsafe_cancel();
 
-    expect(count == std::make_pair<int, int>(3, 3))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(count == std::make_pair<int, int>(3, 3));
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
     expect(that % false == future.has_value());

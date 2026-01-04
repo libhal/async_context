@@ -106,3 +106,34 @@ add_custom_target(copy_compile_commands ALL
     ${CMAKE_BINARY_DIR}/compile_commands.json
     ${CMAKE_SOURCE_DIR}/compile_commands.json
     DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json)
+
+# ==============================================================================
+# Benchmarking
+# ==============================================================================
+
+find_package(benchmark REQUIRED)
+
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Cross compiling, skipping benchmarks")
+else()
+    message(STATUS "Building benchmarks tests!")
+    add_executable(async_benchmark)
+    target_sources(async_benchmark PRIVATE benchmark.cpp)
+
+    target_compile_features(async_benchmark PUBLIC cxx_std_23)
+    target_compile_options(async_benchmark PRIVATE
+        -g
+        -Werror
+        -Wno-unused-command-line-argument
+        -Wall
+        -Wextra
+        -Wshadow
+        -fexceptions
+        -fno-rtti)
+
+    target_link_libraries(async_benchmark PRIVATE
+                            async_context
+                            benchmark::benchmark)
+
+    add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
+endif()
