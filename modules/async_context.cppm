@@ -200,6 +200,10 @@ export constexpr mem::strong_ptr<scheduler> noop_scheduler()
 
 class promise_base;
 
+using word_t = std::max_align_t;
+static constexpr usize word_size = sizeof(word_t);
+static constexpr usize word_shift = std::countr_zero(word_size);
+
 export class context
 {
 public:
@@ -222,7 +226,8 @@ public:
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
 
     // Allocate memory for stack and assign to m_stack
-    m_stack = { allocator.allocate_object<byte>(p_stack_size), p_stack_size };
+    m_stack = { allocator.allocate_object<std::max_align_t>(p_stack_size),
+                1 + (p_stack_size >> word_shift) };
   }
 
   constexpr void unblock() noexcept
@@ -358,7 +363,8 @@ public:
       using poly_allocator = std::pmr::polymorphic_allocator<byte>;
       auto scheduler = std::get<scheduler_t>(m_proxy);
       auto allocator = poly_allocator(&scheduler->get_allocator());
-      allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
+      allocator.deallocate_object<std::max_align_t>(m_stack.data(),
+                                                    m_stack.size());
     }
   };
 
@@ -441,21 +447,21 @@ private:
       ->schedule(*origin_ptr, p_new_state, p_info);
   }
 
-  [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
+  [[nodiscard]] constexpr void* allocate(std::size_t p_words)
   {
-    auto const new_stack_index = m_stack_index + p_bytes;
+    auto const new_stack_index = m_stack_index + p_words;
     if (new_stack_index > m_stack.size()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
-    m_state = p_bytes;
+    m_state = p_words;
     auto* const stack_address = &m_stack[m_stack_index];
     m_stack_index = new_stack_index;
     return stack_address;
   }
 
-  constexpr void deallocate(std::size_t p_bytes)
+  constexpr void deallocate(std::size_t p_words)
   {
-    m_stack_index -= p_bytes;
+    m_stack_index -= p_words;
   }
 
   using context_state = std::variant<usize, blocked_by>;
@@ -466,7 +472,7 @@ private:
   // deal with that by putting the scheduler towards the end since it is the
   // least hot part of the data.
   std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  std::span<byte> m_stack{};                                        // word 2-3
+  std::span<std::max_align_t> m_stack{};                            // word 2-3
   usize m_stack_index{ 0uz };                                       // word 4
   context_state m_state{ 0uz };                                     // word 5-6
   proxy_state m_proxy{ proxy_info{} };                              // word 7-9
@@ -569,7 +575,7 @@ public:
                                       context& p_context,
                                       Args&&...)
   {
-    return p_context.allocate(p_size);
+    return p_context.allocate(1 + (p_size >> word_shift));
   }
 
   // For member functions - handles the implicit 'this' parameter
@@ -579,7 +585,7 @@ public:
                                       context& p_context,
                                       Args&&...)
   {
-    return p_context.allocate(p_size);
+    return p_context.allocate(1 + (p_size >> word_shift));
   }
 
   // Add regular delete operators for normal coroutine destruction
