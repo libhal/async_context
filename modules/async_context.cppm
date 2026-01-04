@@ -22,9 +22,7 @@ module;
 #include <exception>
 #include <memory_resource>
 #include <new>
-#include <print>
 #include <span>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -280,14 +278,16 @@ public:
     }
   }
 
-  // TODO(#31): Implement! Doesn't do anything yet.
-  void cancel()
-  {
-    while (m_active_handle != std::noop_coroutine()) {
-      m_active_handle.destroy();
-    }
-    m_stack_index = 0;
-  }
+  /**
+   * @brief Unsafe cancel will cancel a context's async operation
+   *
+   * This operation is labelled as "unsafe" because it this API does not update
+   * the top level  future<T> object that was initially bound to this context,
+   * to the "cancelled" state. Because of this, using/accessing that future<T>
+   * in anyway is considered UB.
+   *
+   */
+  void unsafe_cancel();
 
   [[nodiscard]] constexpr auto memory_used() const noexcept
   {
@@ -302,15 +302,6 @@ public:
   [[nodiscard]] constexpr auto memory_remaining() const noexcept
   {
     return capacity() - memory_used();
-  }
-
-  void rethrow_if_exception_caught()
-  {
-    if (std::holds_alternative<std::exception_ptr>(m_state)) [[unlikely]] {
-      auto const exception_ptr_copy = std::get<std::exception_ptr>(m_state);
-      m_state = 0uz;  // destroy exception_ptr and set state to `usize`
-      std::rethrow_exception(exception_ptr_copy);
-    }
   }
 
   [[nodiscard]] constexpr auto last_allocation_size() const noexcept
@@ -459,12 +450,7 @@ private:
     m_stack_index -= p_bytes;
   }
 
-  void set_exception(std::exception_ptr p_exception)
-  {
-    m_state = p_exception;
-  }
-
-  using context_state = std::variant<usize, blocked_by, std::exception_ptr>;
+  using context_state = std::variant<usize, blocked_by>;
   using proxy_state = std::variant<proxy_info, mem::strong_ptr<scheduler>>;
 
   // Should stay close to a standard cache-line of 64 bytes (8 words).
@@ -567,6 +553,8 @@ private:
 class promise_base
 {
 public:
+  friend class context;
+
   // For regular functions
   template<typename... Args>
   static constexpr void* operator new(std::size_t p_size,
@@ -1017,15 +1005,9 @@ public:
 
   constexpr ~future()
   {
-    using namespace std::string_literals;
-    std::println("⏱️ Destroying ~future() {} ‼️"sv, static_cast<void*>(this));
     if (std::holds_alternative<handle_type>(m_state)) {
-      std::println("💥 ~future() {} unfinished, callling destroy!",
-                   static_cast<void*>(this));
       std::get<handle_type>(m_state).destroy();
     }
-    std::println("✅ ~future() {} destruction complete!",
-                 static_cast<void*>(this));
   }
 
 private:
@@ -1065,6 +1047,28 @@ inline constexpr future<void> promise_type<void>::get_return_object() noexcept
   // Retrieve the frame size and store it for deallocation on destruction
   m_frame_size = m_context->last_allocation_size();
   return future<void>{ handle };
+}
+
+void context::unsafe_cancel()
+{
+  if (m_active_handle == std::noop_coroutine()) {
+    return;
+  }
+
+  auto index = m_active_handle;
+
+  while (true) {
+    using base_handle = std::coroutine_handle<promise_base>;
+    auto top = base_handle::from_address(index.address());
+    auto continuation = top.promise().m_continuation;
+    if (continuation == std::noop_coroutine()) {
+      // We have found our top level coroutine
+      top.destroy();
+      m_stack_index = 0;
+      return;
+    }
+    index = continuation;
+  }
 }
 
 }  // namespace async::inline v0

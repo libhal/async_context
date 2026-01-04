@@ -379,6 +379,101 @@ void async_context_suite()
     std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
   };
 
+  "Context Cancellation"_test = []() {
+    // Setup
+    auto scheduler =
+      mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+    async::context ctx(scheduler, 1024);
+
+    std::println("====================================");
+    std::println("Running Context Cancellation");
+    std::println("====================================");
+
+    struct raii_counter
+    {
+      raii_counter(std::pair<int*, int*> p_counts)
+        : counts(p_counts)
+      {
+        std::println("🔨 Constructing...");
+        (*counts.first)++;
+      }
+
+      ~raii_counter()  // NOLINT(bugprone-exception-escape)
+      {
+        std::println("💥 Destructing...");
+        (*counts.second)++;
+      }
+      std::pair<int*, int*> counts;
+    };
+
+    std::pair<int, int> count{ 0, 0 };
+    int ends_reached = 0;
+
+    auto get_counter = [&count]() -> auto {
+      return raii_counter(
+        std::make_pair<int*, int*>(&count.first, &count.second));
+    };
+
+    auto a = [get_counter,
+              &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering a");
+      raii_counter counter = get_counter();
+      co_await std::suspend_always{};
+      std::println("a exited");
+      ends_reached++;
+      co_return;
+    };
+    auto b =
+      [a, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering b");
+      raii_counter counter = get_counter();
+      co_await a(p_ctx);
+      std::println("b exited");
+      ends_reached++;
+      co_return;
+    };
+    auto c =
+      [b, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering c");
+      raii_counter counter = get_counter();
+      co_await b(p_ctx);
+      std::println("c exited");
+      ends_reached++;
+      co_return;
+    };
+
+    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % ends_reached == 0);
+
+    auto future = c(ctx);
+
+    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % ends_reached == 0);
+
+    std::println("Resume until future reaches suspension @ coroutine A");
+    future.resume();
+
+    expect(count == std::make_pair<int, int>(3, 0));
+    expect(that % ends_reached == 0);
+    expect(that % 0 < ctx.memory_used());
+    expect(that % false == future.has_value());
+    expect(that % false == future.done());
+
+    ctx.unsafe_cancel();
+
+    expect(count == std::make_pair<int, int>(3, 3))
+      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % ends_reached == 0);
+    expect(that % 0 == ctx.memory_used());
+    expect(that % false == future.has_value());
+    // Unfortunately, context doesn't have the information necessary to this
+    // future. The future is invalid, but we currently cannot change its state
+    // from the perview of the context.
+    expect(that % false == future.done());
+
+    std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
+  };
+
   "Exception Propagation"_test = []() {
     // Setup
     auto scheduler =
@@ -468,21 +563,20 @@ void async_context_suite()
       << "count is {" << count.first << ", " << count.second << "}\n";
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
-
-    std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
   };
 
-  "proxy coroutines"_test = []() {
+  "Proxy Context (no timeout normal behavior)"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context my_context1(scheduler, 1024);
     std::println("====================================");
+    std::println("Running Proxy Context Test (no timeout normal behavior)");
+    std::println("====================================");
 
     static constexpr auto expected_suspensions = 5;
 
-    [[maybe_unused]] auto b = [](async::context&,
-                                 int p_suspend_count) -> future<int> {
+    auto b = [](async::context&, int p_suspend_count) -> future<int> {
       auto const result = p_suspend_count;
       while (p_suspend_count > 0) {
         p_suspend_count--;
@@ -532,12 +626,13 @@ void async_context_suite()
     expect(that % expected_suspensions == value);
   };
 
-  "proxy coroutines timeout"_test = []() {
+  "Proxy  coroutines timeout"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context my_context1(scheduler, 1024);
     std::println("====================================");
+    std::println("Running Proxy Context Test (with timeout)");
     std::println("====================================");
 
     static constexpr auto expected_suspensions = 5;
