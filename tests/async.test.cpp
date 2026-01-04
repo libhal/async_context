@@ -14,9 +14,11 @@
 
 #include <chrono>
 #include <coroutine>
+#include <functional>
 #include <memory_resource>
 #include <ostream>
 #include <source_location>
+#include <stdexcept>
 #include <variant>
 
 #include <boost/ut.hpp>
@@ -170,6 +172,8 @@ void async_context_suite()
     expect(that % blocked_by_testing.done());
     expect(that % scheduler->io_block);
     expect(that % &my_context2 == scheduler->sync_context);
+    expect(that % 0 == my_context.memory_used());
+    expect(that % 0 == my_context2.memory_used());
   };
 
   "mutex-like resource synchronization between coroutines"_test = []() {
@@ -194,6 +198,8 @@ void async_context_suite()
 
       // Block next coroutine from using this resource
       io_in_use = p_context;
+
+      // setup dma transaction...
 
       // It cannot be assumed that the scheduler will not sync_wait() this
       // coroutine, thus, a loop is required to sure that the async operation
@@ -291,33 +297,186 @@ void async_context_suite()
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context ctx(scheduler, 1024);
 
-    auto a = [](async::context& p_ctx) -> future<void> { co_return; };
-    auto b = [a](async::context& p_ctx) -> future<void> {
-      co_await a(p_ctx);
+    std::println("====================================");
+    std::println("Running cancellation test");
+    std::println("====================================");
+
+    struct raii_counter
+    {
+      raii_counter(std::pair<int*, int*> p_counts)
+        : counts(p_counts)
+      {
+        std::println("🔨 Constructing...");
+        (*counts.first)++;
+      }
+
+      ~raii_counter()  // NOLINT(bugprone-exception-escape)
+      {
+        std::println("💥 Destructing...");
+        (*counts.second)++;
+      }
+      std::pair<int*, int*> counts;
+    };
+
+    std::pair<int, int> count{ 0, 0 };
+    int ends_reached = 0;
+
+    auto get_counter = [&count]() -> auto {
+      return raii_counter(
+        std::make_pair<int*, int*>(&count.first, &count.second));
+    };
+
+    auto a = [get_counter,
+              &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering a");
+      raii_counter counter = get_counter();
+      co_await std::suspend_always{};
+      std::println("a exited");
+      ends_reached++;
       co_return;
     };
-    auto c = [b](async::context& p_ctx) -> future<void> {
+    auto b =
+      [a, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering b");
+      raii_counter counter = get_counter();
+      co_await a(p_ctx);
+      std::println("b exited");
+      ends_reached++;
+      co_return;
+    };
+    auto c =
+      [b, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering c");
+      raii_counter counter = get_counter();
       co_await b(p_ctx);
+      std::println("c exited");
+      ends_reached++;
       co_return;
     };
 
     {
-      auto future = c(ctx);
-      future.resume();
-      expect(that % 0 < ctx.memory_used());
-    }
+      expect(count == std::make_pair<int, int>(0, 0));
+      expect(that % ends_reached == 0);
 
+      auto future = c(ctx);
+
+      expect(count == std::make_pair<int, int>(0, 0));
+      expect(that % ends_reached == 0);
+
+      std::println("Resume until future reaches suspension @ coroutine A");
+      future.resume();
+
+      expect(count == std::make_pair<int, int>(3, 0));
+      expect(that % ends_reached == 0);
+      expect(that % 0 < ctx.memory_used());
+    }  // destroy future
+
+    expect(count == std::make_pair<int, int>(3, 3))
+      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
+
+    std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
   };
 
-  // TODO(#): Fix proxy coroutine tests
-#if 0
+  "Exception Propagation"_test = []() {
+    // Setup
+    auto scheduler =
+      mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+    async::context ctx(scheduler, 1024);
+
+    std::println("====================================");
+    std::println("Running Exception Propagation Test");
+    std::println("====================================");
+
+    struct raii_counter
+    {
+      raii_counter(std::pair<int*, int*> p_counts)
+        : counts(p_counts)
+      {
+        std::println("🔨 Constructing...");
+        (*counts.first)++;
+      }
+
+      ~raii_counter()  // NOLINT(bugprone-exception-escape)
+      {
+        std::println("💥 Destructing...");
+        (*counts.second)++;
+      }
+      std::pair<int*, int*> counts;
+    };
+
+    std::pair<int, int> count{ 0, 0 };
+    int ends_reached = 0;
+
+    auto get_counter = [&count]() -> auto {
+      return raii_counter(
+        std::make_pair<int*, int*>(&count.first, &count.second));
+    };
+
+    bool should_throw = true;
+    auto a = [get_counter, &should_throw, &ends_reached](
+               async::context& p_ctx) -> future<void> {
+      std::println("entering a");
+      raii_counter counter = get_counter();
+      co_await std::suspend_always{};
+      if (should_throw) {
+        throw std::runtime_error("Throwing this error for the test");
+      }
+      std::println("a exited");
+      ends_reached++;
+      co_return;
+    };
+    auto b =
+      [a, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering b");
+      raii_counter counter = get_counter();
+      co_await a(p_ctx);
+      std::println("b exited");
+      ends_reached++;
+      co_return;
+    };
+    auto c =
+      [b, get_counter, &ends_reached](async::context& p_ctx) -> future<void> {
+      std::println("entering c");
+      raii_counter counter = get_counter();
+      co_await b(p_ctx);
+      std::println("c exited");
+      ends_reached++;
+      co_return;
+    };
+
+    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % ends_reached == 0);
+
+    auto future = c(ctx);
+
+    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % ends_reached == 0);
+
+    std::println("Resume until future reaches suspension @ coroutine A");
+    future.resume();
+
+    expect(throws<std::runtime_error>([&future]() {
+      std::println("This resume should throw an runtime_error");
+      future.sync_wait();
+    }))
+      << "runtime_error Exception was not caught!";
+    expect(that % true == future.done());
+    expect(that % false == future.has_value());
+    expect(count == std::make_pair<int, int>(3, 3))
+      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % ends_reached == 0);
+    expect(that % 0 == ctx.memory_used());
+
+    std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
+  };
+
   "proxy coroutines"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
     async::context my_context1(scheduler, 1024);
-    std::println("====================================");
     std::println("====================================");
 
     static constexpr auto expected_suspensions = 5;
@@ -432,8 +591,7 @@ void async_context_suite()
 
     expect(that % my_future.done());
     expect(that % -1 == value);
-    expect(that % my_context1.memory_used() == my_context1.capacity());
+    expect(that % 0 == my_context1.memory_used());
   };
-#endif
 };
 }  // namespace async
