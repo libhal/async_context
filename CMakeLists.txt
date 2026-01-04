@@ -67,11 +67,10 @@ install(
 # Unit testing
 # ==============================================================================
 
-find_package(ut REQUIRED)
-
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
+    find_package(ut REQUIRED)
     message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
     # Add module files
@@ -90,7 +89,11 @@ else()
         -Wextra
         -Wshadow
         -fexceptions
+        -fsanitize=address
         -fno-rtti)
+
+    target_link_options(async_unit_test PRIVATE
+        -fsanitize=address)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
@@ -102,3 +105,34 @@ add_custom_target(copy_compile_commands ALL
     ${CMAKE_BINARY_DIR}/compile_commands.json
     ${CMAKE_SOURCE_DIR}/compile_commands.json
     DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json)
+
+# ==============================================================================
+# Benchmarking
+# ==============================================================================
+
+
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Cross compiling, skipping benchmarks")
+else()
+    find_package(benchmark REQUIRED)
+    message(STATUS "Building benchmarks tests!")
+    add_executable(async_benchmark)
+    target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)
+
+    target_compile_features(async_benchmark PUBLIC cxx_std_23)
+    target_compile_options(async_benchmark PRIVATE
+        -g
+        -Werror
+        -Wno-unused-command-line-argument
+        -Wall
+        -Wextra
+        -Wshadow
+        -fexceptions
+        -fno-rtti)
+
+    target_link_libraries(async_benchmark PRIVATE
+                            async_context
+                            benchmark::benchmark)
+
+    add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
+endif()

@@ -33,7 +33,7 @@ class async_context_conan(ConanFile):
     description = ("Implementation of C++20 coroutines targeting embedded system by eliminating the usage of the global heap and providing a 'context' which contains a coroutine stack frame and other useful utilities for scheduling.")
     topics = ("async", "coroutines", "stack", "scheduling", "scheduler")
     settings = "compiler", "build_type", "os", "arch"
-    exports_sources = "modules/*", "tests/*", "CMakeLists.txt", "*.cmake.in", "LICENSE"
+    exports_sources = "modules/*", "benchmarks/*", "tests/*", "CMakeLists.txt", "*.cmake.in", "LICENSE"
     package_type = "static-library"
     shared = False
 
@@ -86,7 +86,9 @@ class async_context_conan(ConanFile):
     def build_requirements(self):
         self.tool_requires("cmake/[^4.0.0]")
         self.tool_requires("ninja/[^1.3.0]")
-        self.test_requires("boost-ext-ut/2.3.1")
+        if str(self.settings.os) != "baremetal":
+            self.test_requires("boost-ext-ut/2.3.1")
+            self.test_requires("benchmark/1.9.4")
 
     def requirements(self):
         self.requires("strong_ptr/0.1.2")
