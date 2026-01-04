@@ -118,7 +118,7 @@ if(CMAKE_CROSSCOMPILING)
 else()
     message(STATUS "Building benchmarks tests!")
     add_executable(async_benchmark)
-    target_sources(async_benchmark PRIVATE benchmark/benchmark.cpp)
+    target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)
 
     target_compile_features(async_benchmark PUBLIC cxx_std_23)
     target_compile_options(async_benchmark PRIVATE
