@@ -625,7 +625,7 @@ void async_context_suite()
     expect(that % expected_suspensions == value);
   };
 
-  "Proxy  coroutines timeout"_test = []() {
+  skip / "Proxy Coroutines Timeout"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());

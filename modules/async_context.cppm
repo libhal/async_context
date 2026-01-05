@@ -14,9 +14,12 @@
 
 module;
 
+#define DEBUGGING 0
+
 #include <cstddef>
 #include <cstdint>
 
+#include <bit>
 #include <chrono>
 #include <coroutine>
 #include <exception>
@@ -27,6 +30,10 @@ module;
 #include <utility>
 #include <variant>
 
+#if DEBUGGING
+#include <print>
+#endif
+
 export module async_context;
 
 export import strong_ptr;
@@ -36,6 +43,7 @@ namespace async::inline v0 {
 export using u8 = std::uint8_t;
 export using byte = std::uint8_t;
 export using usize = std::size_t;
+export using uptr = std::uintptr_t;
 
 export enum class blocked_by : u8 {
   /// Not blocked by anything, ready to run!
@@ -226,8 +234,9 @@ public:
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
 
     // Allocate memory for stack and assign to m_stack
-    m_stack = { allocator.allocate_object<std::max_align_t>(p_stack_size),
+    m_stack = { allocator.allocate_object<uptr>(p_stack_size),
                 1 + (p_stack_size >> word_shift) };
+    m_stack_pointer = m_stack.data();
   }
 
   constexpr void unblock() noexcept
@@ -273,10 +282,7 @@ public:
 
   [[nodiscard]] constexpr auto state() const noexcept
   {
-    if (std::holds_alternative<blocked_by>(m_state)) {
-      return std::get<blocked_by>(m_state);
-    }
-    return blocked_by::nothing;
+    return m_state;
   }
 
   constexpr void active_handle(std::coroutine_handle<> p_active_handle)
@@ -304,7 +310,7 @@ public:
 
   [[nodiscard]] constexpr auto memory_used() const noexcept
   {
-    return m_stack_index;
+    return m_stack_pointer - m_stack.data();
   }
 
   [[nodiscard]] constexpr auto capacity() const noexcept
@@ -315,14 +321,6 @@ public:
   [[nodiscard]] constexpr auto memory_remaining() const noexcept
   {
     return capacity() - memory_used();
-  }
-
-  [[nodiscard]] constexpr auto last_allocation_size() const noexcept
-  {
-    if (std::holds_alternative<usize>(m_state)) {
-      return std::get<usize>(m_state);
-    }
-    return 0uz;
   }
 
   [[nodiscard]] constexpr bool is_proxy() const noexcept
@@ -363,8 +361,7 @@ public:
       using poly_allocator = std::pmr::polymorphic_allocator<byte>;
       auto scheduler = std::get<scheduler_t>(m_proxy);
       auto allocator = poly_allocator(&scheduler->get_allocator());
-      allocator.deallocate_object<std::max_align_t>(m_stack.data(),
-                                                    m_stack.size());
+      allocator.deallocate_object<uptr>(m_stack.data(), m_stack.size());
     }
   };
 
@@ -384,7 +381,6 @@ private:
 
   context(proxy_tag, context& p_parent)
     : m_active_handle(std::noop_coroutine())
-    , m_state(0uz)
     , m_proxy(proxy_info{})
   {
     // We need to manually set:
@@ -393,18 +389,20 @@ private:
     //    3. m_proxy
 
     auto const previous_stack = p_parent.m_stack;
-    auto const previous_m_stack_index = p_parent.m_stack_index;
+    auto const previous_m_stack_pointer = p_parent.m_stack_pointer;
     auto const rest_of_the_stack =
-      previous_stack.subspan(previous_m_stack_index);
+      std::span(previous_m_stack_pointer,
+                previous_m_stack_pointer - previous_stack.data());
 
     // Our proxy will take control over the rest of the unused stack memory from
     // the above context.
     m_stack = rest_of_the_stack;
-    m_stack_index = 0uz;
+    m_stack_pointer = m_stack.data();
 
     // Shrink the stack of the parent context to be equal to the current stack
     // index. This will prevent the parent context from being used again.
-    p_parent.m_stack = p_parent.m_stack.first(previous_m_stack_index);
+    p_parent.m_stack =
+      std::span(p_parent.m_stack.data(), previous_m_stack_pointer);
 
     // If this is a proxy, take its pointer to the origin
     if (p_parent.is_proxy()) {
@@ -447,24 +445,38 @@ private:
       ->schedule(*origin_ptr, p_new_state, p_info);
   }
 
-  [[nodiscard]] constexpr void* allocate(std::size_t p_words)
+  [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
-    auto const new_stack_index = m_stack_index + p_words;
-    if (new_stack_index > m_stack.size()) [[unlikely]] {
+    constexpr size_t mask = sizeof(uptr) - 1uz;
+    constexpr size_t shift = std::countr_zero(sizeof(uptr));
+
+    // The extra 1 word is for the stack pointer's address
+    size_t const words_needed = 1uz + ((p_bytes + mask) >> shift);
+    auto const new_stack_index = m_stack_pointer + words_needed;
+
+    if (new_stack_index > m_stack.end().base()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
-    m_state = p_words;
-    auto* const stack_address = &m_stack[m_stack_index];
-    m_stack_index = new_stack_index;
-    return stack_address;
+
+    // Put the address of the stack pointer member on the stack, before the
+    // coroutine frame, such that the delete operation can find the address and
+    // update it.
+    *m_stack_pointer = std::bit_cast<uptr>(&m_stack_pointer);
+#if DEBUGGING
+    std::println("💾 Allocating {} words, current stack {}, new stack {}, "
+                 "stack pointer member address: 0x{:x}",
+                 words_needed,
+                 static_cast<void*>(m_stack_pointer),
+                 static_cast<void*>(new_stack_index),
+                 *m_stack_pointer);
+#endif
+    // Address of the coroutine frame will be the current position of the stack
+    // pointer + 1 to avoid overwriting the stack pointer address.
+    auto* const coroutine_frame_stack_address = m_stack_pointer + 1uz;
+    m_stack_pointer = new_stack_index;
+    return coroutine_frame_stack_address;
   }
 
-  constexpr void deallocate(std::size_t p_words)
-  {
-    m_stack_index -= p_words;
-  }
-
-  using context_state = std::variant<usize, blocked_by>;
   using proxy_state = std::variant<proxy_info, mem::strong_ptr<scheduler>>;
 
   // Should stay close to a standard cache-line of 64 bytes (8 words).
@@ -472,26 +484,25 @@ private:
   // deal with that by putting the scheduler towards the end since it is the
   // least hot part of the data.
   std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  std::span<std::max_align_t> m_stack{};                            // word 2-3
-  usize m_stack_index{ 0uz };                                       // word 4
-  context_state m_state{ 0uz };                                     // word 5-6
-  proxy_state m_proxy{ proxy_info{} };                              // word 7-9
+  std::span<uptr> m_stack{};                                        // word 2-3
+  uptr* m_stack_pointer = nullptr;                                  // word 4
+  blocked_by m_state = blocked_by::nothing;                         // word 5
+  proxy_state m_proxy{};                                            // word 6-7
 };
 
-static_assert(sizeof(context) <=
-              std::hardware_constructive_interference_size * 2);
+static_assert(sizeof(context) <= std::hardware_constructive_interference_size);
 
 export class context_token
 {
 public:
   constexpr context_token() = default;
   constexpr context_token(context& p_capture) noexcept
-    : m_context_address(std::bit_cast<std::uintptr_t>(&p_capture))
+    : m_context_address(std::bit_cast<uptr>(&p_capture))
   {
   }
   constexpr context_token& operator=(context& p_capture) noexcept
   {
-    m_context_address = std::bit_cast<std::uintptr_t>(&p_capture);
+    m_context_address = std::bit_cast<uptr>(&p_capture);
     return *this;
   }
   constexpr context_token& operator=(nullptr_t) noexcept
@@ -509,7 +520,7 @@ public:
 
   constexpr bool operator==(context& p_context) noexcept
   {
-    return m_context_address == std::bit_cast<std::uintptr_t>(&p_context);
+    return m_context_address == std::bit_cast<uptr>(&p_context);
   }
 
   [[nodiscard]] constexpr bool in_use() const noexcept
@@ -531,7 +542,7 @@ public:
   // unblocks and clear itself.
   constexpr void lease(context& p_capture) noexcept
   {
-    m_context_address = std::bit_cast<std::uintptr_t>(&p_capture);
+    m_context_address = std::bit_cast<uptr>(&p_capture);
   }
 
   constexpr std::suspend_always set_as_block_by_sync(context& p_capture)
@@ -555,7 +566,7 @@ public:
   }
 
 private:
-  std::uintptr_t m_context_address = 0U;
+  uptr m_context_address = 0U;
 };
 
 // =============================================================================
@@ -575,7 +586,7 @@ public:
                                       context& p_context,
                                       Args&&...)
   {
-    return p_context.allocate(1 + (p_size >> word_shift));
+    return p_context.allocate(p_size);
   }
 
   // For member functions - handles the implicit 'this' parameter
@@ -585,16 +596,26 @@ public:
                                       context& p_context,
                                       Args&&...)
   {
-    return p_context.allocate(1 + (p_size >> word_shift));
+    return p_context.allocate(p_size);
   }
 
-  // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept
+  static constexpr void operator delete(void* p_promise) noexcept
   {
-  }
-
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
+    // Acquire the pointer to the context stack memory from behind the promise
+    // memory.
+    auto** stack_pointer_address = *(static_cast<uptr***>(p_promise) - 1);
+    // Update the stack pointer's address to be equal where it was before the
+    // promise was allocated. Or said another way, the
+#if DEBUGGING
+    std::println(
+      "Deleting {}, context's stack address ptr is at {}. Moving stack "
+      "pointer to = {}, stack pointer was previously = {}",
+      p_promise,
+      static_cast<void*>(stack_pointer_address),
+      static_cast<void*>(static_cast<uptr*>(p_promise) - 1),
+      static_cast<void*>(*stack_pointer_address));
+#endif
+    *stack_pointer_address = (static_cast<uptr*>(p_promise) - 1);
   }
 
   // Constructor for functions accepting no arguments
@@ -734,18 +755,10 @@ class promise : public promise_base
 public:
   using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
+  using promise_base::operator delete;
   using our_handle = std::coroutine_handle<promise<T>>;
 
   friend class future<T>;
-
-  // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept
-  {
-  }
-
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
-  }
 
   constexpr final_awaiter<promise<T>> final_suspend() noexcept
   {
@@ -767,14 +780,8 @@ public:
     m_future_state->template emplace<T>(std::forward<U>(p_value));
   }
 
-  ~promise()
-  {
-    m_context->deallocate(m_frame_size);
-  }
-
 protected:
   future_state<T>* m_future_state;
-  usize m_frame_size;
 };
 
 export template<>
@@ -783,18 +790,10 @@ class promise<void> : public promise_base
 public:
   using promise_base::promise_base;  // Inherit constructors
   using promise_base::operator new;
+  using promise_base::operator delete;
   using our_handle = std::coroutine_handle<promise<void>>;
 
   friend class future<void>;
-
-  // Add regular delete operators for normal coroutine destruction
-  static constexpr void operator delete(void*) noexcept
-  {
-  }
-
-  static constexpr void operator delete(void*, std::size_t) noexcept
-  {
-  }
 
   constexpr final_awaiter<promise<void>> final_suspend() noexcept
   {
@@ -813,14 +812,8 @@ public:
     *m_future_state = std::monostate{};
   }
 
-  ~promise()
-  {
-    m_context->deallocate(m_frame_size);
-  }
-
 protected:
   future_state<void>* m_future_state;
-  usize m_frame_size;
 };
 
 export template<typename T>
@@ -1055,8 +1048,6 @@ constexpr future<T> promise<T>::get_return_object() noexcept
   using future_handle = std::coroutine_handle<promise<T>>;
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
-  // Retrieve the frame size and store it for deallocation on destruction
-  m_frame_size = m_context->last_allocation_size();
   return future<T>{ handle };
 }
 
@@ -1065,8 +1056,6 @@ inline constexpr future<void> promise<void>::get_return_object() noexcept
   using future_handle = std::coroutine_handle<promise<void>>;
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
-  // Retrieve the frame size and store it for deallocation on destruction
-  m_frame_size = m_context->last_allocation_size();
   return future<void>{ handle };
 }
 
@@ -1085,7 +1074,7 @@ void context::unsafe_cancel()
     if (continuation == std::noop_coroutine()) {
       // We have found our top level coroutine
       top.destroy();
-      m_stack_index = 0;
+      m_stack_pointer = m_stack.data();
       return;
     }
     index = continuation;

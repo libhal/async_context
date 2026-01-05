@@ -110,7 +110,6 @@ add_custom_target(copy_compile_commands ALL
 # Benchmarking
 # ==============================================================================
 
-
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping benchmarks")
 else()
