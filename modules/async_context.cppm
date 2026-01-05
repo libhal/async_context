@@ -208,10 +208,6 @@ export constexpr mem::strong_ptr<scheduler> noop_scheduler()
 
 class promise_base;
 
-using word_t = std::max_align_t;
-static constexpr usize word_size = sizeof(word_t);
-static constexpr usize word_shift = std::countr_zero(word_size);
-
 export class context
 {
 public:
@@ -234,8 +230,7 @@ public:
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
 
     // Allocate memory for stack and assign to m_stack
-    m_stack = { allocator.allocate_object<uptr>(p_stack_size),
-                1 + (p_stack_size >> word_shift) };
+    m_stack = { allocator.allocate_object<byte>(p_stack_size), p_stack_size };
     m_stack_pointer = m_stack.data();
   }
 
@@ -361,7 +356,7 @@ public:
       using poly_allocator = std::pmr::polymorphic_allocator<byte>;
       auto scheduler = std::get<scheduler_t>(m_proxy);
       auto allocator = poly_allocator(&scheduler->get_allocator());
-      allocator.deallocate_object<uptr>(m_stack.data(), m_stack.size());
+      allocator.deallocate_object<byte>(m_stack.data(), m_stack.size());
     }
   };
 
@@ -447,12 +442,7 @@ private:
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
-    constexpr size_t mask = sizeof(uptr) - 1uz;
-    constexpr size_t shift = std::countr_zero(sizeof(uptr));
-
-    // The extra 1 word is for the stack pointer's address
-    size_t const words_needed = 1uz + ((p_bytes + mask) >> shift);
-    auto const new_stack_index = m_stack_pointer + words_needed;
+    auto const new_stack_index = m_stack_pointer + p_bytes;
 
     if (new_stack_index > m_stack.end().base()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
@@ -461,7 +451,8 @@ private:
     // Put the address of the stack pointer member on the stack, before the
     // coroutine frame, such that the delete operation can find the address and
     // update it.
-    *m_stack_pointer = std::bit_cast<uptr>(&m_stack_pointer);
+    *std::bit_cast<uptr*>(m_stack_pointer) =
+      std::bit_cast<uptr>(&m_stack_pointer);
 #if DEBUGGING
     std::println("💾 Allocating {} words, current stack {}, new stack {}, "
                  "stack pointer member address: 0x{:x}",
@@ -472,7 +463,7 @@ private:
 #endif
     // Address of the coroutine frame will be the current position of the stack
     // pointer + 1 to avoid overwriting the stack pointer address.
-    auto* const coroutine_frame_stack_address = m_stack_pointer + 1uz;
+    auto* const coroutine_frame_stack_address = m_stack_pointer + sizeof(uptr);
     m_stack_pointer = new_stack_index;
     return coroutine_frame_stack_address;
   }
@@ -484,8 +475,8 @@ private:
   // deal with that by putting the scheduler towards the end since it is the
   // least hot part of the data.
   std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  std::span<uptr> m_stack{};                                        // word 2-3
-  uptr* m_stack_pointer = nullptr;                                  // word 4
+  std::span<byte> m_stack{};                                        // word 2-3
+  byte* m_stack_pointer = nullptr;                                  // word 4
   blocked_by m_state = blocked_by::nothing;                         // word 5
   proxy_state m_proxy{};                                            // word 6-7
 };

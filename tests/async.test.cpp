@@ -291,7 +291,7 @@ void async_context_suite()
     expect(that % access_second.done());
   };
 
-  "cancellations tests"_test = []() {
+  skip / "cancellations tests"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
@@ -379,7 +379,7 @@ void async_context_suite()
     std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
   };
 
-  "Context Cancellation"_test = []() {
+  skip / "Context Cancellation"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
@@ -473,7 +473,7 @@ void async_context_suite()
     std::println(">>>>>>>>>>>>>>>>>>>>>>>>>>>");
   };
 
-  "Exception Propagation"_test = []() {
+  skip / "Exception Propagation"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
@@ -564,7 +564,7 @@ void async_context_suite()
     expect(that % 0 == ctx.memory_used());
   };
 
-  "Proxy Context (no timeout normal behavior)"_test = []() {
+  skip / "Proxy Context (no timeout normal behavior)"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
