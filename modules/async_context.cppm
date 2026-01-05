@@ -297,6 +297,11 @@ public:
     }
   }
 
+  void resume()
+  {
+    m_active_handle.resume();
+  }
+
   /**
    * @brief Unsafe cancel will cancel a context's async operation
    *
@@ -487,7 +492,7 @@ private:
   std::span<uptr> m_stack{};                                        // word 2-3
   uptr* m_stack_pointer = nullptr;                                  // word 4
   blocked_by m_state = blocked_by::nothing;                         // word 5
-  proxy_state m_proxy{};                                            // word 6-7
+  proxy_state m_proxy{ proxy_info{} };                              // word 6-8
 };
 
 static_assert(sizeof(context) <= std::hardware_constructive_interference_size);
@@ -601,11 +606,9 @@ public:
 
   static constexpr void operator delete(void* p_promise) noexcept
   {
-    // Acquire the pointer to the context stack memory from behind the promise
-    // memory.
+    // Acquire the pointer to the context stack memory from behind the coroutine
+    // frame's memory.
     auto** stack_pointer_address = *(static_cast<uptr***>(p_promise) - 1);
-    // Update the stack pointer's address to be equal where it was before the
-    // promise was allocated. Or said another way, the
 #if DEBUGGING
     std::println(
       "Deleting {}, context's stack address ptr is at {}. Moving stack "
@@ -615,6 +618,8 @@ public:
       static_cast<void*>(static_cast<uptr*>(p_promise) - 1),
       static_cast<void*>(*stack_pointer_address));
 #endif
+    // Update the stack pointer's address to be equal where it was before the
+    // promise was allocated. Or said another way, the
     *stack_pointer_address = (static_cast<uptr*>(p_promise) - 1);
   }
 
@@ -1080,5 +1085,4 @@ void context::unsafe_cancel()
     index = continuation;
   }
 }
-
 }  // namespace async::inline v0

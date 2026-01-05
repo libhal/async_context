@@ -68,15 +68,18 @@ __attribute__((noinline)) int direct_level1(int x)
   return direct_level2(x) + 1;
 }
 
-static void BM_DirectReturn(benchmark::State& state)
+int (*f_ptr)(int) = &direct_level1;
+
+static void BM_FunctionPointerCall(benchmark::State& state)
 {
   int input = 42;
   for (auto _ : state) {
-    int result = direct_level1(input);
+    int result = f_ptr(input);
     escape(result);
+    escape(f_ptr);
   }
 }
-BENCHMARK(BM_DirectReturn);
+BENCHMARK(BM_FunctionPointerCall);
 
 // ----------------------------------------------------------------------------
 // 2.0 VIRTUAL CALLS: Indirect function calls, 3 levels deep
@@ -477,10 +480,27 @@ static void BM_FutureVoidCoroutine(benchmark::State& state)
   for (auto _ : state) {
     auto f = void_coro_level1(ctx, output, input);
     f.sync_wait();
-    escape(output);
+    benchmark::DoNotOptimize(f);
+    benchmark::DoNotOptimize(output);
   }
 }
 BENCHMARK(BM_FutureVoidCoroutine);
+
+static void BM_FutureVoidCoroutineContextResume(benchmark::State& state)
+{
+  async::context ctx(scheduler, 4096);
+
+  int input = 42;
+  int output = 0;
+  for (auto _ : state) {
+    auto f = void_coro_level1(ctx, output, input);
+    while (not f.done()) {
+      ctx.resume();
+    }
+    benchmark::DoNotOptimize(output);
+  }
+}
+BENCHMARK(BM_FutureVoidCoroutineContextResume);
 
 BENCHMARK_MAIN();
 // NOLINTEND(readability-identifier-naming)
