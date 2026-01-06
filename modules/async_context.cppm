@@ -139,7 +139,6 @@ public:
   static auto constexpr default_timeout = sleep_duration(0);
 
   context() = default;
-
   context(context const&) = delete;
   context& operator=(context const&) = delete;
   context(context&&) = delete;
@@ -249,11 +248,6 @@ public:
     return capacity() - memory_used();
   }
 
-  [[nodiscard]] constexpr bool is_proxy() const noexcept
-  {
-    return m_proxy.parent == nullptr;
-  }
-
   // TODO(#40): Perform cancellation on context destruction
   virtual ~context() = default;
 
@@ -268,14 +262,9 @@ private:
     context* parent = nullptr;
   };
 
-  template<typename Self>
-  [[nodiscard]] constexpr auto origin(this Self&& self) noexcept
-    -> decltype(auto)
+  [[nodiscard]] constexpr bool is_proxy() const noexcept
   {
-    if (self.is_proxy()) {
-      return self.m_proxy.origin;
-    }
-    return &self;
+    return m_proxy.parent == nullptr;
   }
 
   constexpr void transition_to(blocked_by p_new_state,
@@ -379,6 +368,14 @@ public:
   static proxy_context from(context& p_parent)
   {
     return { p_parent };
+  }
+
+  ~proxy_context() override
+  {
+    // Unshrink parent stack, by setting its range to be the start of its
+    // stack and the end to be the end of this stack.
+    m_proxy.parent->m_stack = { m_proxy.parent->m_stack.begin(),
+                                m_stack.end() };
   }
 
 private:

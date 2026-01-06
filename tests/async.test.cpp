@@ -573,7 +573,7 @@ void async_context_suite()
       while (suspension_count < expected_suspensions) {
         suspension_count++;
         // For some reason this segfaults on Linux
-        std::println("p_suspend_count = {}!", suspension_count);
+        // std::println("p_suspend_count = {}!", suspension_count);
         co_await std::suspend_always{};
       }
       co_return expected_suspensions;
@@ -633,10 +633,11 @@ void async_context_suite()
     auto suspension_count = 0;
 
     auto b = [&suspension_count](async::context&) -> future<int> {
+      suspension_count = 0;
       while (suspension_count < expected_suspensions) {
         suspension_count++;
         // For some reason this segfaults on Linux
-        std::println("p_suspend_count = {}!", suspension_count);
+        // std::println("p_suspend_count = {}!", suspension_count);
         co_await std::suspend_always{};
       }
       co_return expected_suspensions;
@@ -677,9 +678,11 @@ void async_context_suite()
 
     auto my_future = a(ctx);
     auto value = my_future.sync_wait();
+    auto value2 = a(ctx).sync_wait();
 
     expect(that % my_future.done());
     expect(that % -1 == value);
+    expect(that % -1 == value2);
     expect(that % suspension_count == timeout_count);
     expect(that % 0 == ctx.memory_used());
   };

@@ -109,7 +109,7 @@ endif()
 # Benchmarking
 # ==============================================================================
 
-if(TRUE)
+if(FALSE)
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping benchmarks")
 else()
