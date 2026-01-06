@@ -22,30 +22,22 @@
 
 import async_context;
 
-struct test_scheduler
-  : public async::scheduler
-  , mem::enable_strong_from_this<test_scheduler>
+struct test_context : public async::context
 {
+  std::array<async::uptr, 8192> m_stack{};
   int sleep_count = 0;
-
-  test_scheduler(mem::strong_ptr_only_token)
+  test_context()
   {
+    this->initialize_stack_memory(m_stack);
   }
 
 private:
-  void do_schedule([[maybe_unused]] async::context& p_context,
-                   [[maybe_unused]] async::blocked_by p_block_state,
-                   [[maybe_unused]] async::scheduler::block_info
-                     p_block_info) noexcept override
+  void do_schedule(async::blocked_by p_blocked_state,
+                   async::block_info) noexcept override
   {
-    if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
+    if (p_blocked_state == async::blocked_by::time) {
       sleep_count++;
     }
-  }
-
-  std::pmr::memory_resource& do_get_allocator() noexcept override
-  {
-    return *strong_from_this().get_allocator();
   }
 };
 
@@ -62,21 +54,19 @@ async::future<void> coro_double_delay(async::context&)
 
 int main()
 {
-  auto scheduler =
-    mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-  async::context my_context(scheduler, 1024);
+  test_context ctx;
 
-  auto future_delay = coro_double_delay(my_context);
+  auto future_delay = coro_double_delay(ctx);
 
   assert(not future_delay.done());
 
   future_delay.resume();
 
-  assert(scheduler->sleep_count == 1);
+  assert(ctx.sleep_count == 1);
 
   future_delay.resume();
 
-  assert(scheduler->sleep_count == 2);
+  assert(ctx.sleep_count == 2);
   assert(not future_delay.done());
 
   future_delay.resume();

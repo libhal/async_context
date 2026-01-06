@@ -34,9 +34,6 @@ import async_context;
 
 // Quick Bench: https://quick-bench.com/
 // Compiler flags: -std=c++23 -O3 -DNDEBUG
-//
-// Include your de-moduled async_context code above this section
-// ============================================================================
 
 // ============================================================================
 // BENCHMARKS
@@ -251,63 +248,25 @@ __attribute__((noinline)) async::future<int> sync_future_level1(
   auto f = sync_future_level2(ctx, x);
   return f.sync_wait() + 1;
 }
-struct test_scheduler
-  : public async::scheduler
-  , mem::enable_strong_from_this<test_scheduler>
+struct benchmark_context : public async::context
 {
-  int sleep_count = 0;
-  async::context* sync_context = nullptr;
-  bool io_block = false;
+  std::array<async::uptr, 8192> m_stack{};
 
-  test_scheduler(mem::strong_ptr_only_token)
+  benchmark_context()
   {
+    this->initialize_stack_memory(m_stack);
   }
 
 private:
-  void do_schedule([[maybe_unused]] async::context& p_context,
-                   [[maybe_unused]] async::blocked_by p_block_state,
-                   [[maybe_unused]] async::scheduler::block_info
-                     p_block_info) noexcept override
+  void do_schedule(async::blocked_by, async::block_info) noexcept override
   {
-    switch (p_block_state) {
-      case async::blocked_by::time: {
-        if (std::holds_alternative<std::chrono::nanoseconds>(p_block_info)) {
-          sleep_count++;
-        }
-        break;
-      }
-      case async::blocked_by::sync: {
-        if (std::holds_alternative<async::context*>(p_block_info)) {
-          auto* context = std::get<async::context*>(p_block_info);
-          sync_context = context;
-        }
-        break;
-      }
-      case async::blocked_by::io: {
-        io_block = true;
-        break;
-      }
-      case async::blocked_by::nothing: {
-        break;
-      }
-      default: {
-        break;
-      }
-    }
-  }
-
-  std::pmr::memory_resource& do_get_allocator() noexcept override
-  {
-    return *strong_from_this().get_allocator();
+    // Do nothing for the benchmark
   }
 };
 
-auto scheduler =
-  mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-
 static void bm_future_sync_return(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -344,7 +303,7 @@ __attribute__((noinline)) async::future<int> coro_level1(async::context& ctx,
 
 static void bm_future_coroutine(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -385,7 +344,7 @@ __attribute__((noinline)) async::future<int> sync_in_coro_level1(
 
 static void bm_future_sync_await(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -425,7 +384,7 @@ __attribute__((noinline)) async::future<int> mixed_coro_level1(
 
 static void bm_future_mixed(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -466,7 +425,7 @@ void_coro_level1(async::context& ctx, int& out, int x)
 
 static void bm_future_void_coroutine(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   int output = 0;
@@ -481,7 +440,7 @@ BENCHMARK(bm_future_void_coroutine);
 
 static void bm_future_void_coroutine_context_resume(benchmark::State& state)
 {
-  async::context ctx(scheduler, 4096);
+  benchmark_context ctx;
 
   int input = 42;
   int output = 0;
