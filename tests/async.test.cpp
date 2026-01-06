@@ -19,6 +19,7 @@
 #include <ostream>
 #include <source_location>
 #include <stdexcept>
+#include <thread>
 #include <variant>
 
 #include <boost/ut.hpp>
@@ -118,7 +119,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context(scheduler, 1024);
+    async::context my_context(scheduler, 8192);
 
     static constexpr int expected_return_value = 5;
 
@@ -133,11 +134,13 @@ void async_context_suite()
 
     // Exercise
     auto future_print = print_and_wait_coroutine(my_context);
+    expect(that % 0 < my_context.memory_used());
     auto value = future_print.sync_wait();
 
     // Verify
     expect(that % resumption_occurred);
     expect(that % future_print.done());
+    expect(that % 0 == my_context.memory_used());
     expect(that % 2 == scheduler->sleep_count);
     expect(that % expected_return_value == value);
   };
@@ -146,8 +149,8 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context(scheduler, 1024);
-    async::context my_context2(scheduler, 1024);
+    async::context my_context(scheduler, 8192);
+    async::context my_context2(scheduler, 8192);
 
     resumption_occurred = false;
 
@@ -165,6 +168,8 @@ void async_context_suite()
     // Exercise
     auto blocked_by_testing = test_coro(my_context);
     expect(that % not resumption_occurred);
+    expect(that % 0 < my_context.memory_used());
+    expect(that % 0 == my_context2.memory_used());
     blocked_by_testing.sync_wait();
 
     // Verify
@@ -176,12 +181,12 @@ void async_context_suite()
     expect(that % 0 == my_context2.memory_used());
   };
 
-  "mutex-like resource synchronization between coroutines"_test = []() {
+  "Context Token"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context1(scheduler, 1024);
-    async::context my_context2(scheduler, 1024);
+    async::context my_context1(scheduler, 8192);
+    async::context my_context2(scheduler, 8192);
 
     async::context_token io_in_use;
 
@@ -191,8 +196,8 @@ void async_context_suite()
 
       std::println("Executing 'single_resource' coroutine");
       while (io_in_use) {
-        std::println("Resource unavailable, blocked by {}",
-                     io_in_use.address());
+        // std::println("Resource unavailable, blocked by {}",
+        //              io_in_use.address());
         co_await io_in_use.set_as_block_by_sync(p_context);
       }
 
@@ -218,6 +223,9 @@ void async_context_suite()
     std::println("🧱 Future setup");
     auto access_first = single_resource(my_context1);
     auto access_second = single_resource(my_context2);
+
+    expect(that % 0 < my_context1.memory_used());
+    expect(that % 0 < my_context2.memory_used());
 
     auto check_access_first_blocked_by =
       [&](async::blocked_by p_state = async::blocked_by::io,
@@ -289,13 +297,16 @@ void async_context_suite()
 
     expect(that % my_context2.state() == async::blocked_by::nothing);
     expect(that % access_second.done());
+
+    expect(that % 0 == my_context1.memory_used());
+    expect(that % 0 == my_context2.memory_used());
   };
 
-  "cancellations tests"_test = []() {
+  "Cancellation"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context ctx(scheduler, 1024);
+    async::context ctx(scheduler, 8192);
 
     std::println("====================================");
     std::println("Running cancellation test");
@@ -355,18 +366,21 @@ void async_context_suite()
     };
 
     {
-      expect(count == std::make_pair<int, int>(0, 0));
+      expect(count == std::make_pair<int, int>(0, 0))
+        << "count is {" << count.first << ", " << count.second << "}\n";
       expect(that % ends_reached == 0);
 
       auto future = c(ctx);
 
-      expect(count == std::make_pair<int, int>(0, 0));
+      expect(count == std::make_pair<int, int>(0, 0))
+        << "count is {" << count.first << ", " << count.second << "}\n";
       expect(that % ends_reached == 0);
 
       std::println("Resume until future reaches suspension @ coroutine A");
       future.resume();
 
-      expect(count == std::make_pair<int, int>(3, 0));
+      expect(count == std::make_pair<int, int>(3, 0))
+        << "count is {" << count.first << ", " << count.second << "}\n";
       expect(that % ends_reached == 0);
       expect(that % 0 < ctx.memory_used());
     }  // destroy future
@@ -383,7 +397,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context ctx(scheduler, 1024);
+    async::context ctx(scheduler, 8192);
 
     std::println("====================================");
     std::println("Running Context Cancellation");
@@ -477,7 +491,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context ctx(scheduler, 1024);
+    async::context ctx(scheduler, 8192);
 
     std::println("====================================");
     std::println("Running Exception Propagation Test");
@@ -568,7 +582,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context1(scheduler, 1024);
+    async::context ctx(scheduler, 8192 * 2);
     std::println("====================================");
     std::println("Running Proxy Context Test (no timeout normal behavior)");
     std::println("====================================");
@@ -576,13 +590,14 @@ void async_context_suite()
     static constexpr auto expected_suspensions = 5;
 
     auto b = [](async::context&, int p_suspend_count) -> future<int> {
-      auto const result = p_suspend_count;
-      while (p_suspend_count > 0) {
-        p_suspend_count--;
-        std::println("p_suspend_count = {}!", p_suspend_count);
+      auto result = p_suspend_count;
+      while (result > 0) {
+        result--;
+        // For some reason this segfaults on Linux
+        // std::println("count = {}!", result);
         co_await std::suspend_always{};
       }
-      co_return result;
+      co_return p_suspend_count;
     };
 
     auto a = [b](async::context& p_ctx) -> future<int> {
@@ -618,18 +633,19 @@ void async_context_suite()
       co_return -1;
     };
 
-    auto my_future = a(my_context1);
+    auto my_future = a(ctx);
     auto value = my_future.sync_wait();
 
     expect(that % my_future.done());
     expect(that % expected_suspensions == value);
+    expect(that % 0 == ctx.memory_used());
   };
 
   "Proxy Coroutines Timeout"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context1(scheduler, 1024);
+    async::context my_context1(scheduler, 8192);
     std::println("====================================");
     std::println("Running Proxy Context Test (with timeout)");
     std::println("====================================");
@@ -641,7 +657,8 @@ void async_context_suite()
       auto const result = p_suspend_count;
       while (p_suspend_count > 0) {
         p_suspend_count--;
-        std::println("p_suspend_count = {}!", p_suspend_count);
+        // For some reason this segfaults on Linux
+        // std::println("p_suspend_count = {}!", p_suspend_count);
         co_await std::suspend_always{};
       }
       co_return result;

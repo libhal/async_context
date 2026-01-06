@@ -234,8 +234,9 @@ public:
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
 
     // Allocate memory for stack and assign to m_stack
-    m_stack = { allocator.allocate_object<uptr>(p_stack_size),
-                1 + (p_stack_size >> word_shift) };
+    auto const words_to_allocate = 1 + (p_stack_size >> word_shift);
+    m_stack = { allocator.allocate_object<uptr>(words_to_allocate),
+                words_to_allocate };
     m_stack_pointer = m_stack.data();
   }
 
@@ -390,24 +391,18 @@ private:
   {
     // We need to manually set:
     //    1. m_stack
-    //    2. m_stack_index
+    //    2. m_stack_pointer
     //    3. m_proxy
-
-    auto const previous_stack = p_parent.m_stack;
-    auto const previous_m_stack_pointer = p_parent.m_stack_pointer;
-    auto const rest_of_the_stack =
-      std::span(previous_m_stack_pointer,
-                previous_m_stack_pointer - previous_stack.data());
 
     // Our proxy will take control over the rest of the unused stack memory from
     // the above context.
-    m_stack = rest_of_the_stack;
+    m_stack =
+      p_parent.m_stack.last(p_parent.m_stack_pointer - p_parent.m_stack.data());
     m_stack_pointer = m_stack.data();
 
     // Shrink the stack of the parent context to be equal to the current stack
     // index. This will prevent the parent context from being used again.
-    p_parent.m_stack =
-      std::span(p_parent.m_stack.data(), previous_m_stack_pointer);
+    p_parent.m_stack = std::span(p_parent.m_stack.data(), m_stack_pointer);
 
     // If this is a proxy, take its pointer to the origin
     if (p_parent.is_proxy()) {
@@ -459,7 +454,7 @@ private:
     size_t const words_needed = 1uz + ((p_bytes + mask) >> shift);
     auto const new_stack_index = m_stack_pointer + words_needed;
 
-    if (new_stack_index > m_stack.end().base()) [[unlikely]] {
+    if (new_stack_index > &m_stack.back()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
 
