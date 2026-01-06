@@ -42,13 +42,6 @@ import async_context;
 // BENCHMARKS
 // ============================================================================
 
-// Prevent compiler from optimizing away the result
-template<typename T>
-void escape(T&& val)
-{
-  benchmark::DoNotOptimize(val);
-}
-
 // ----------------------------------------------------------------------------
 // 1. BASELINE: Direct returns, 3 levels deep
 // ----------------------------------------------------------------------------
@@ -68,27 +61,30 @@ __attribute__((noinline)) int direct_level1(int x)
   return direct_level2(x) + 1;
 }
 
-static void BM_DirectReturn(benchmark::State& state)
+int (*f_ptr)(int) = &direct_level1;
+
+static void bm_function_pointer_call(benchmark::State& state)
 {
   int input = 42;
   for (auto _ : state) {
-    int result = direct_level1(input);
-    escape(result);
+    int result = f_ptr(input);
+    benchmark::DoNotOptimize(result);
+    benchmark::DoNotOptimize(f_ptr);
   }
 }
-BENCHMARK(BM_DirectReturn);
+BENCHMARK(bm_function_pointer_call);
 
 // ----------------------------------------------------------------------------
 // 2.0 VIRTUAL CALLS: Indirect function calls, 3 levels deep
 // ----------------------------------------------------------------------------
 
-struct VirtualBase
+struct virtual_base
 {
   virtual int compute(int x) = 0;
-  virtual ~VirtualBase() = default;
+  virtual ~virtual_base() = default;
 };
 
-struct VirtualLevel3 : VirtualBase
+struct virtual_level3 : virtual_base
 {
   int compute(int x) override
   {
@@ -96,9 +92,9 @@ struct VirtualLevel3 : VirtualBase
   }
 };
 
-struct VirtualLevel2 : VirtualBase
+struct virtual_level2 : virtual_base
 {
-  VirtualLevel2(VirtualBase* next)
+  virtual_level2(virtual_base* next)
     : m_next(next)
   {
   }
@@ -106,12 +102,12 @@ struct VirtualLevel2 : VirtualBase
   {
     return m_next->compute(x) + 1;
   }
-  VirtualBase* m_next;
+  virtual_base* m_next;
 };
 
-struct VirtualLevel1 : VirtualBase
+struct virtual_level1 : virtual_base
 {
-  VirtualLevel1(VirtualBase* next)
+  virtual_level1(virtual_base* next)
     : m_next(next)
   {
   }
@@ -119,36 +115,36 @@ struct VirtualLevel1 : VirtualBase
   {
     return m_next->compute(x) + 1;
   }
-  VirtualBase* m_next;
+  virtual_base* m_next;
 };
 
-static void BM_VirtualCall(benchmark::State& state)
+static void bm_virtual_call(benchmark::State& state)
 {
-  VirtualLevel3 level3;
-  VirtualLevel2 level2(&level3);
-  VirtualLevel1 level1(&level2);
-  VirtualBase* base = &level1;
+  virtual_level3 level3;
+  virtual_level2 level2(&level3);
+  virtual_level1 level1(&level2);
+  virtual_base* base = &level1;
 
   int input = 42;
   for (auto _ : state) {
     int result = base->compute(input);
-    escape(result);
+    benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(BM_VirtualCall);
+BENCHMARK(bm_virtual_call);
 
 // ---------------------------------------------------------------------------
 // 2.1. VIRTUAL CALLS – variant return type
 // ---------------------------------------------------------------------------
 
-struct VirtualBaseVariant
+struct virtual_base_variant
 {
   // Return a variant that holds the integer result.
   virtual async::future_state<int> compute(int x) = 0;
-  virtual ~VirtualBaseVariant() noexcept = default;
+  virtual ~virtual_base_variant() noexcept = default;
 };
 
-struct VirtualLevel3Variant : VirtualBaseVariant
+struct virtual_level3_variant : virtual_base_variant
 {
   async::future_state<int> compute(int x) override
   {
@@ -158,9 +154,9 @@ struct VirtualLevel3Variant : VirtualBaseVariant
   }
 };
 
-struct VirtualLevel2Variant : VirtualBaseVariant
+struct virtual_level2_variant : virtual_base_variant
 {
-  explicit VirtualLevel2Variant(VirtualBaseVariant* next) noexcept
+  explicit virtual_level2_variant(virtual_base_variant* next) noexcept
     : m_next(next)
   {
   }
@@ -178,12 +174,12 @@ struct VirtualLevel2Variant : VirtualBaseVariant
     return res;
   }
 
-  VirtualBaseVariant* m_next;
+  virtual_base_variant* m_next;
 };
 
-struct VirtualLevel1Variant : VirtualBaseVariant
+struct virtual_level1_variant : virtual_base_variant
 {
-  explicit VirtualLevel1Variant(VirtualBaseVariant* next) noexcept
+  explicit virtual_level1_variant(virtual_base_variant* next) noexcept
     : m_next(next)
   {
   }
@@ -197,15 +193,15 @@ struct VirtualLevel1Variant : VirtualBaseVariant
     return res;
   }
 
-  VirtualBaseVariant* m_next;
+  virtual_base_variant* m_next;
 };
 
-static void BM_VirtualCallVariant(benchmark::State& state)
+static void bm_virtual_call_variant(benchmark::State& state)
 {
-  VirtualLevel3Variant level3;
-  VirtualLevel2Variant level2(&level3);
-  VirtualLevel1Variant level1(&level2);
-  VirtualBaseVariant* base = &level1;
+  virtual_level3_variant level3;
+  virtual_level2_variant level2(&level3);
+  virtual_level1_variant level1(&level2);
+  virtual_base_variant* base = &level1;
 
   int input = 42;
   for (auto _ : state) {
@@ -224,10 +220,10 @@ static void BM_VirtualCallVariant(benchmark::State& state)
       // Should never happen in this test.
       value = 0;
     }
-    escape(value);
+    benchmark::DoNotOptimize(value);
   }
 }
-BENCHMARK(BM_VirtualCallVariant);
+BENCHMARK(bm_virtual_call_variant);
 
 // ----------------------------------------------------------------------------
 // 3. FUTURE SYNC: Non-coroutine functions returning future<int>, 3 levels deep
@@ -309,7 +305,7 @@ private:
 auto scheduler =
   mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
 
-static void BM_FutureSyncReturn(benchmark::State& state)
+static void bm_future_sync_return(benchmark::State& state)
 {
   async::context ctx(scheduler, 4096);
 
@@ -317,10 +313,10 @@ static void BM_FutureSyncReturn(benchmark::State& state)
   for (auto _ : state) {
     auto f = sync_future_level1(ctx, input);
     int result = f.sync_wait();
-    escape(result);
+    benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(BM_FutureSyncReturn);
+BENCHMARK(bm_future_sync_return);
 
 // ----------------------------------------------------------------------------
 // 4. FUTURE COROUTINE: Actual coroutines returning future<int>, 3 levels deep
@@ -346,7 +342,7 @@ __attribute__((noinline)) async::future<int> coro_level1(async::context& ctx,
   co_return val + 1;
 }
 
-static void BM_FutureCoroutine(benchmark::State& state)
+static void bm_future_coroutine(benchmark::State& state)
 {
   async::context ctx(scheduler, 4096);
 
@@ -354,10 +350,10 @@ static void BM_FutureCoroutine(benchmark::State& state)
   for (auto _ : state) {
     auto f = coro_level1(ctx, input);
     int result = f.sync_wait();
-    escape(result);
+    benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(BM_FutureCoroutine);
+BENCHMARK(bm_future_coroutine);
 
 // ----------------------------------------------------------------------------
 // 5. FUTURE SYNC AWAIT: Sync futures co_awaited inside a coroutine
@@ -387,7 +383,7 @@ __attribute__((noinline)) async::future<int> sync_in_coro_level1(
   co_return val + 1;
 }
 
-static void BM_FutureSyncAwait(benchmark::State& state)
+static void bm_future_sync_await(benchmark::State& state)
 {
   async::context ctx(scheduler, 4096);
 
@@ -395,10 +391,10 @@ static void BM_FutureSyncAwait(benchmark::State& state)
   for (auto _ : state) {
     auto f = sync_in_coro_level1(ctx, input);
     int result = f.sync_wait();
-    escape(result);
+    benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(BM_FutureSyncAwait);
+BENCHMARK(bm_future_sync_await);
 
 // ----------------------------------------------------------------------------
 // 6. MIXED: Coroutine at top, sync futures below
@@ -427,7 +423,7 @@ __attribute__((noinline)) async::future<int> mixed_coro_level1(
   co_return val + 1;
 }
 
-static void BM_FutureMixed(benchmark::State& state)
+static void bm_future_mixed(benchmark::State& state)
 {
   async::context ctx(scheduler, 4096);
 
@@ -435,10 +431,10 @@ static void BM_FutureMixed(benchmark::State& state)
   for (auto _ : state) {
     auto f = mixed_coro_level1(ctx, input);
     int result = f.sync_wait();
-    escape(result);
+    benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(BM_FutureMixed);
+BENCHMARK(bm_future_mixed);
 
 // ----------------------------------------------------------------------------
 // 7. VOID COROUTINES: Test void return path overhead
@@ -468,7 +464,7 @@ void_coro_level1(async::context& ctx, int& out, int x)
   co_return;
 }
 
-static void BM_FutureVoidCoroutine(benchmark::State& state)
+static void bm_future_void_coroutine(benchmark::State& state)
 {
   async::context ctx(scheduler, 4096);
 
@@ -477,10 +473,27 @@ static void BM_FutureVoidCoroutine(benchmark::State& state)
   for (auto _ : state) {
     auto f = void_coro_level1(ctx, output, input);
     f.sync_wait();
-    escape(output);
+    benchmark::DoNotOptimize(f);
+    benchmark::DoNotOptimize(output);
   }
 }
-BENCHMARK(BM_FutureVoidCoroutine);
+BENCHMARK(bm_future_void_coroutine);
+
+static void bm_future_void_coroutine_context_resume(benchmark::State& state)
+{
+  async::context ctx(scheduler, 4096);
+
+  int input = 42;
+  int output = 0;
+  for (auto _ : state) {
+    auto f = void_coro_level1(ctx, output, input);
+    while (not f.done()) {
+      ctx.resume();
+    }
+    benchmark::DoNotOptimize(output);
+  }
+}
+BENCHMARK(bm_future_void_coroutine_context_resume);
 
 BENCHMARK_MAIN();
 // NOLINTEND(readability-identifier-naming)
