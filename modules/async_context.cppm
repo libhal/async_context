@@ -126,116 +126,28 @@ export class operation_cancelled : public std::exception
  */
 using sleep_duration = std::chrono::nanoseconds;
 
-// TODO(#39): Merge scheduler into context
-/**
- * @brief
- *
- */
-export class scheduler
-{
-public:
-  using block_info = std::variant<std::monostate, sleep_duration, context*>;
-
-  /**
-   * @brief
-   *
-   * It is up to the scheduler to ensure that concurrent calls to this API are
-   * serialized appropriately. For a single threaded event loop, syncronization
-   * and serialization is not necessary. For a thread pool implementation,
-   * syncronization nd serialization must be considered.
-   *
-   * @param p_context - the context that is requested to be scheduled
-   * @param p_block_state - the type of blocking event the context has
-   * encountered.
-   * @param p_block_info - Information about what exactly is blocking this
-   * context. If p_block_info is a sleep_duration, and the p_block_state is
-   * blocked_by::time, then this context is requesting to be scheduled at that
-   * or a later time. If the p_block_info is a sleep_duration, and the block
-   * state isn't blocked_by::time, then this sleep duration is a hint to the
-   * scheduler to when it would be appropriate to reschedule this context. The
-   * scheduler does not have to be abided by this. If p_block_info is a pointer
-   * to a context, then the pointed to context is currently blocking p_context.
-   * This can be used to determine when to schedule p_context again, but does
-   * not have to be abided by for proper function.
-   */
-  void schedule(context& p_context,
-                blocked_by p_block_state,
-                block_info p_block_info) noexcept
-  {
-    return do_schedule(p_context, p_block_state, p_block_info);
-  }
-
-  /**
-   * @brief Get allocator from scheduler
-   *
-   * The memory_resource returned be owned or embedded within the scheduler. The
-   * memory_resource and its backing memory must live as long as the scheduler.
-   * The returned reference MUST NOT be bound to a nullptr.
-   *
-   * @return std::pmr::memory_resource& - the memory resource to be used to
-   * allocate memory for async::context stack memory. The memory_resource must
-   * be owned or embedded within the scheduler.
-   */
-  std::pmr::memory_resource& get_allocator() noexcept
-  {
-    return do_get_allocator();
-  }
-
-private:
-  virtual void do_schedule(context& p_context,
-                           blocked_by p_block_state,
-                           block_info p_block_info) noexcept = 0;
-
-  virtual std::pmr::memory_resource& do_get_allocator() noexcept = 0;
-};
-
-export constexpr mem::strong_ptr<scheduler> noop_scheduler()
-{
-  struct noop_scheduler : scheduler
-  {
-    void do_schedule(context&, blocked_by, block_info) noexcept override
-    {
-      return;
-    }
-
-    std::pmr::memory_resource& do_get_allocator() noexcept override
-    {
-      std::terminate();
-    }
-  };
-
-  static noop_scheduler sched;
-
-  return mem::strong_ptr(mem::unsafe_assume_static_tag{}, sched);
-}
-
 class promise_base;
 
 export class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
-  using scheduler_t = mem::strong_ptr<scheduler>;
+  using block_info = std::variant<std::monostate, sleep_duration, context*>;
 
-  // with something thats easier and safer to work with.
+  context() = default;
+
   /**
-   * @brief Construct a new context object
+   * @brief Implementations of context must call this API in their constructor
+   * in order to initialize the stack memory of this context.
    *
-   * @param p_scheduler - a pointer to a transition handler that
-   * handles transitions in blocked_by state.
-   * @param p_stack_size - Number of bytes to allocate for the context's stack
-   * memory.
+   * @param p_stack_memory - stack memory provided by the derived context. It is
+   * the responsibility of the derived context to manager this memory. If this
+   * memory was dynamically allocated, then it is the responsibility of the
+   * derived class to deallocate that memory.
    */
-  context(scheduler_t const& p_scheduler, usize p_stack_size)
-    : m_proxy(p_scheduler)
+  constexpr void initialize_stack_memory(std::span<uptr> p_stack_memory)
   {
-    using poly_allocator = std::pmr::polymorphic_allocator<byte>;
-    auto allocator = poly_allocator(&p_scheduler->get_allocator());
-
-    // Allocate memory for stack and assign to m_stack
-    auto const words_to_allocate = 1uz + ((p_stack_size + mask) >> shift);
-    m_stack = { allocator.allocate_object<uptr>(words_to_allocate),
-                words_to_allocate };
+    m_stack = p_stack_memory;
     m_stack_pointer = m_stack.data();
   }
 
@@ -330,46 +242,11 @@ public:
 
   [[nodiscard]] constexpr bool is_proxy() const noexcept
   {
-    return std::holds_alternative<proxy_info>(m_proxy);
+    return m_proxy.parent == nullptr;
   }
 
-  /**
-   * @brief Prevent a temporary context from being borrowed
-   *
-   * Required to prevent proxies with dangling references to a context
-   *
-   * @return context - (never returns generates compile time error)
-   */
-  context borrow_proxy() && = delete;
-
-  /**
-   * @brief
-   *
-   * @return context
-   */
-  context borrow_proxy() &
-  {
-    return { proxy_tag{}, *this };
-  }
-
-  ~context()
-  {
-    // We need to destroy the entire coroutine chain here!
-    // TODO(#40): Perform cancellation on context destruction
-    // unsafe_cancel();
-
-    if (is_proxy()) {
-      auto* parent = std::get<proxy_info>(m_proxy).parent;
-      // Unshrink parent stack, by setting its range to be the start of its
-      // stack and the end to be the end of this stack.
-      parent->m_stack = std::span(parent->m_stack.begin(), m_stack.end());
-    } else {
-      using poly_allocator = std::pmr::polymorphic_allocator<byte>;
-      auto scheduler = std::get<scheduler_t>(m_proxy);
-      auto allocator = poly_allocator(&scheduler->get_allocator());
-      allocator.deallocate_object<uptr>(m_stack.data(), m_stack.size());
-    }
-  };
+  // TODO(#40): Perform cancellation on context destruction
+  virtual ~context() = default;
 
 private:
   friend class promise_base;
@@ -382,67 +259,20 @@ private:
     context* parent = nullptr;
   };
 
-  struct proxy_tag
-  {};
-
-  context(proxy_tag, context& p_parent)
-    : m_active_handle(std::noop_coroutine())
-    , m_proxy(proxy_info{})
+  template<typename Self>
+  [[nodiscard]] constexpr auto origin(this Self&& self) noexcept
+    -> decltype(auto)
   {
-    // We need to manually set:
-    //    1. m_stack
-    //    2. m_stack_pointer
-    //    3. m_proxy
-
-    // Our proxy will take control over the rest of the unused stack memory from
-    // the above context.
-    m_stack =
-      p_parent.m_stack.last(p_parent.m_stack_pointer - p_parent.m_stack.data());
-    m_stack_pointer = m_stack.data();
-
-    // Shrink the stack of the parent context to be equal to the current stack
-    // index. This will prevent the parent context from being used again.
-    p_parent.m_stack = std::span(p_parent.m_stack.data(), m_stack_pointer);
-
-    // If this is a proxy, take its pointer to the origin
-    if (p_parent.is_proxy()) {
-      auto info = std::get<proxy_info>(p_parent.m_proxy);
-      m_proxy = proxy_info{
-        .origin = info.origin,
-        .parent = &p_parent,
-      };
-    } else {  // Otherwise, the current parent is the origin.
-      m_proxy = proxy_info{
-        .origin = &p_parent,
-        .parent = &p_parent,
-      };
+    if (self.is_proxy()) {
+      return self.m_proxy.origin;
     }
+    return &self;
   }
 
-  [[nodiscard]] constexpr context* origin() noexcept
+  constexpr void transition_to(blocked_by p_new_state,
+                               block_info p_info = std::monostate{}) noexcept
   {
-    if (is_proxy()) {
-      return std::get<proxy_info>(m_proxy).origin;
-    }
-    return this;
-  }
-
-  [[nodiscard]] constexpr context const* origin() const noexcept
-  {
-    if (is_proxy()) {
-      return std::get<proxy_info>(m_proxy).origin;
-    }
-    return this;
-  }
-
-  constexpr void transition_to(
-    blocked_by p_new_state,
-    scheduler::block_info p_info = std::monostate{}) noexcept
-  {
-    auto* origin_ptr = origin();
-    origin_ptr->m_state = p_new_state;
-    std::get<scheduler_t>(origin_ptr->m_proxy)
-      ->schedule(*origin_ptr, p_new_state, p_info);
+    schedule(*this, p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
@@ -475,20 +305,107 @@ private:
     return coroutine_frame_stack_address;
   }
 
-  using proxy_state = std::variant<proxy_info, mem::strong_ptr<scheduler>>;
+  /**
+   * @brief Wrapper around call to do_schedule
+   *
+   * This wrapper exists to allow future
+   *
+   * @param p_context
+   * @param p_block_state
+   * @param p_block_info
+   */
+  void schedule(context& p_context,
+                blocked_by p_block_state,
+                block_info p_block_info) noexcept
+  {
+    return do_schedule(p_context, p_block_state, p_block_info);
+  }
 
-  // Should stay close to a standard cache-line of 64 bytes (8 words).
-  // Unfortunately we cannot achieve that if we want proxy support, so we must
-  // deal with that by putting the scheduler towards the end since it is the
-  // least hot part of the data.
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 1
-  std::span<uptr> m_stack{};                                        // word 2-3
-  uptr* m_stack_pointer = nullptr;                                  // word 4
-  blocked_by m_state = blocked_by::nothing;                         // word 5
-  proxy_state m_proxy{ proxy_info{} };                              // word 6-8
+  /**
+   * @brief Implementations of context use this to notify their scheduler of
+   * changes to this async context.
+   *
+   * It is up to the scheduler to ensure that concurrent calls to this API are
+   * serialized appropriately. For a single threaded event loop, syncronization
+   * and serialization is not necessary. For a thread pool implementation,
+   * syncronization and serialization must be considered.
+   *
+   * @param p_context - the context that is requested to be scheduled
+   * @param p_block_state - the type of blocking event the context has
+   * encountered.
+   * @param p_block_info - Information about what exactly is blocking this
+   * context. If p_block_info is a sleep_duration, and the p_block_state is
+   * blocked_by::time, then this context is requesting to be scheduled at that
+   * or a later time. If the p_block_info is a sleep_duration, and the block
+   * state isn't blocked_by::time, then this sleep duration is a hint to the
+   * scheduler to when it would be appropriate to reschedule this context. The
+   * scheduler does not have to be abided by this. If p_block_info is a pointer
+   * to a context, then the pointed to context is currently blocking p_context.
+   * This can be used to determine when to schedule p_context again, but does
+   * not have to be abided by for proper function.
+   */
+  virtual void do_schedule(context& p_context,
+                           blocked_by p_block_state,
+                           block_info p_block_info) noexcept = 0;
+  friend class proxy_context;
+
+  /* vtable ptr */                                                  // word 1
+  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 2
+  std::span<uptr> m_stack{};                                        // word 3-4
+  uptr* m_stack_pointer = nullptr;                                  // word 5
+  blocked_by m_state = blocked_by::nothing;                         // word 6
+  proxy_info m_proxy{};                                             // word 7-8
 };
 
-static_assert(sizeof(context) <= std::hardware_constructive_interference_size);
+// Context should stay close to a standard cache-line of 64 bytes (8 words) for
+// a 64-bit system. This compile time check ensures that the context does not
+// exceed the this boundary for the platform.
+static_assert(sizeof(context) <= std::hardware_constructive_interference_size,
+              "Context cannot be contained within a cache-line (as specified "
+              "by std::hardware_constructive_interference_size)");
+
+export class proxy_context : public context
+{
+  proxy_context(context& p_parent)
+  {
+    m_active_handle = std::noop_coroutine();
+    m_proxy = {};
+    // We need to manually set:
+    //    1. m_stack
+    //    2. m_stack_pointer
+    //    3. m_proxy
+
+    // Our proxy will take control over the rest of the unused stack memory from
+    // the above context.
+    m_stack =
+      p_parent.m_stack.last(p_parent.m_stack_pointer - p_parent.m_stack.data());
+    m_stack_pointer = m_stack.data();
+
+    // Shrink the stack of the parent context to be equal to the current stack
+    // index. This will prevent the parent context from being used again.
+    p_parent.m_stack = std::span(p_parent.m_stack.data(), m_stack_pointer);
+
+    // If this is a proxy, take its pointer to the origin
+    if (p_parent.is_proxy()) {
+      m_proxy = proxy_info{
+        .origin = m_proxy.origin,
+        .parent = &p_parent,
+      };
+    } else {  // Otherwise, the current parent is the origin.
+      m_proxy = proxy_info{
+        .origin = &p_parent,
+        .parent = &p_parent,
+      };
+    }
+  }
+
+  void do_schedule(context& p_context,
+                   blocked_by p_block_state,
+                   block_info p_block_info) noexcept override
+  {
+    m_proxy.origin->schedule(p_context, p_block_state, p_block_info);
+  }
+};
 
 export class context_token
 {

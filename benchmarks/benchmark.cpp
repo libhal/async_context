@@ -251,15 +251,13 @@ __attribute__((noinline)) async::future<int> sync_future_level1(
   auto f = sync_future_level2(ctx, x);
   return f.sync_wait() + 1;
 }
-struct test_scheduler
-  : public async::scheduler
-  , mem::enable_strong_from_this<test_scheduler>
+struct test_context : public async::context
 {
   int sleep_count = 0;
   async::context* sync_context = nullptr;
   bool io_block = false;
 
-  test_scheduler(mem::strong_ptr_only_token)
+  test_context(mem::strong_ptr_only_token)
   {
   }
 
@@ -303,7 +301,7 @@ private:
 };
 
 auto scheduler =
-  mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
+  mem::make_strong_ptr<test_context>(std::pmr::new_delete_resource());
 
 static void bm_future_sync_return(benchmark::State& state)
 {

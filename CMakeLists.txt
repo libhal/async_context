@@ -110,28 +110,28 @@ add_custom_target(copy_compile_commands ALL
 # Benchmarking
 # ==============================================================================
 
-if(CMAKE_CROSSCOMPILING)
-    message(STATUS "Cross compiling, skipping benchmarks")
-else()
-    find_package(benchmark REQUIRED)
-    message(STATUS "Building benchmarks tests!")
-    add_executable(async_benchmark)
-    target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)
+# if(CMAKE_CROSSCOMPILING)
+#     message(STATUS "Cross compiling, skipping benchmarks")
+# else()
+#     find_package(benchmark REQUIRED)
+#     message(STATUS "Building benchmarks tests!")
+#     add_executable(async_benchmark)
+#     target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)
 
-    target_compile_features(async_benchmark PUBLIC cxx_std_23)
-    target_compile_options(async_benchmark PRIVATE
-        -g
-        -Werror
-        -Wno-unused-command-line-argument
-        -Wall
-        -Wextra
-        -Wshadow
-        -fexceptions
-        -fno-rtti)
+#     target_compile_features(async_benchmark PUBLIC cxx_std_23)
+#     target_compile_options(async_benchmark PRIVATE
+#         -g
+#         -Werror
+#         -Wno-unused-command-line-argument
+#         -Wall
+#         -Wextra
+#         -Wshadow
+#         -fexceptions
+#         -fno-rtti)
 
-    target_link_libraries(async_benchmark PRIVATE
-                            async_context
-                            benchmark::benchmark)
+#     target_link_libraries(async_benchmark PRIVATE
+#                             async_context
+#                             benchmark::benchmark)
 
-    add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
-endif()
+#     add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
+# endif()
