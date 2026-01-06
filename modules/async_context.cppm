@@ -44,6 +44,8 @@ export using u8 = std::uint8_t;
 export using byte = std::uint8_t;
 export using usize = std::size_t;
 export using uptr = std::uintptr_t;
+constexpr size_t mask = sizeof(uptr) - 1uz;
+constexpr size_t shift = std::countr_zero(sizeof(uptr));
 
 export enum class blocked_by : u8 {
   /// Not blocked by anything, ready to run!
@@ -124,6 +126,7 @@ export class operation_cancelled : public std::exception
  */
 using sleep_duration = std::chrono::nanoseconds;
 
+// TODO(#39): Merge scheduler into context
 /**
  * @brief
  *
@@ -208,10 +211,6 @@ export constexpr mem::strong_ptr<scheduler> noop_scheduler()
 
 class promise_base;
 
-using word_t = std::max_align_t;
-static constexpr usize word_size = sizeof(word_t);
-static constexpr usize word_shift = std::countr_zero(word_size);
-
 export class context
 {
 public:
@@ -234,7 +233,7 @@ public:
     auto allocator = poly_allocator(&p_scheduler->get_allocator());
 
     // Allocate memory for stack and assign to m_stack
-    auto const words_to_allocate = 1 + (p_stack_size >> word_shift);
+    auto const words_to_allocate = 1uz + ((p_stack_size + mask) >> shift);
     m_stack = { allocator.allocate_object<uptr>(words_to_allocate),
                 words_to_allocate };
     m_stack_pointer = m_stack.data();
@@ -356,7 +355,8 @@ public:
   ~context()
   {
     // We need to destroy the entire coroutine chain here!
-    // cancel();
+    // TODO(#40): Perform cancellation on context destruction
+    // unsafe_cancel();
 
     if (is_proxy()) {
       auto* parent = std::get<proxy_info>(m_proxy).parent;
@@ -447,12 +447,10 @@ private:
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
-    constexpr size_t mask = sizeof(uptr) - 1uz;
-    constexpr size_t shift = std::countr_zero(sizeof(uptr));
 
     // The extra 1 word is for the stack pointer's address
-    size_t const words_needed = 1uz + ((p_bytes + mask) >> shift);
-    auto const new_stack_index = m_stack_pointer + words_needed;
+    size_t const words_to_allocate = 1uz + ((p_bytes + mask) >> shift);
+    auto const new_stack_index = m_stack_pointer + words_to_allocate;
 
     if (new_stack_index > &m_stack.back()) [[unlikely]] {
       throw bad_coroutine_alloc(this);
@@ -1006,6 +1004,8 @@ public:
 
   void cancel()
   {
+    // TODO(#37): consider if cancel should check the context state for blocked
+    // by io or external and skip cancellation if thats the case.
     if (std::holds_alternative<handle_type>(m_state)) {
       std::get<handle_type>(m_state).destroy();
     }
@@ -1061,6 +1061,7 @@ inline constexpr future<void> promise<void>::get_return_object() noexcept
 
 void context::unsafe_cancel()
 {
+  // TODO(#38): Consider if a safe variant of cancel is achievable
   if (m_active_handle == std::noop_coroutine()) {
     return;
   }

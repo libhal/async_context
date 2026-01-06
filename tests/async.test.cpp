@@ -14,12 +14,10 @@
 
 #include <chrono>
 #include <coroutine>
-#include <functional>
 #include <memory_resource>
 #include <ostream>
 #include <source_location>
 #include <stdexcept>
-#include <thread>
 #include <variant>
 
 #include <boost/ut.hpp>
@@ -119,7 +117,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context(scheduler, 8192);
+    async::context ctx(scheduler, 8192);
 
     static constexpr int expected_return_value = 5;
 
@@ -133,14 +131,14 @@ void async_context_suite()
     };
 
     // Exercise
-    auto future_print = print_and_wait_coroutine(my_context);
-    expect(that % 0 < my_context.memory_used());
+    auto future_print = print_and_wait_coroutine(ctx);
+    expect(that % 0 < ctx.memory_used());
     auto value = future_print.sync_wait();
 
     // Verify
     expect(that % resumption_occurred);
     expect(that % future_print.done());
-    expect(that % 0 == my_context.memory_used());
+    expect(that % 0 == ctx.memory_used());
     expect(that % 2 == scheduler->sleep_count);
     expect(that % expected_return_value == value);
   };
@@ -149,44 +147,43 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context(scheduler, 8192);
-    async::context my_context2(scheduler, 8192);
+    async::context ctx1(scheduler, 8192);
+    async::context ctx2(scheduler, 8192);
 
     resumption_occurred = false;
 
-    auto test_coro =
-      [&my_context2](async::context& p_context) -> async::future<void> {
+    auto test_coro = [&ctx2](async::context& p_context) -> async::future<void> {
       using namespace std::chrono_literals;
       std::println("Printed from a coroutine");
       co_await 100ns;
       resumption_occurred = true;
       co_await p_context.block_by_io();
-      co_await p_context.block_by_sync(&my_context2);
+      co_await p_context.block_by_sync(&ctx2);
       co_return;
     };
 
     // Exercise
-    auto blocked_by_testing = test_coro(my_context);
+    auto blocked_by_testing = test_coro(ctx1);
     expect(that % not resumption_occurred);
-    expect(that % 0 < my_context.memory_used());
-    expect(that % 0 == my_context2.memory_used());
+    expect(that % 0 < ctx1.memory_used());
+    expect(that % 0 == ctx2.memory_used());
     blocked_by_testing.sync_wait();
 
     // Verify
     expect(that % resumption_occurred);
     expect(that % blocked_by_testing.done());
     expect(that % scheduler->io_block);
-    expect(that % &my_context2 == scheduler->sync_context);
-    expect(that % 0 == my_context.memory_used());
-    expect(that % 0 == my_context2.memory_used());
+    expect(that % &ctx2 == scheduler->sync_context);
+    expect(that % 0 == ctx1.memory_used());
+    expect(that % 0 == ctx2.memory_used());
   };
 
   "Context Token"_test = []() {
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context1(scheduler, 8192);
-    async::context my_context2(scheduler, 8192);
+    async::context ctx1(scheduler, 8192);
+    async::context ctx2(scheduler, 8192);
 
     async::context_token io_in_use;
 
@@ -196,6 +193,7 @@ void async_context_suite()
 
       std::println("Executing 'single_resource' coroutine");
       while (io_in_use) {
+        // For some reason this segfaults on Linux
         // std::println("Resource unavailable, blocked by {}",
         //              io_in_use.address());
         co_await io_in_use.set_as_block_by_sync(p_context);
@@ -221,18 +219,18 @@ void async_context_suite()
     };
 
     std::println("🧱 Future setup");
-    auto access_first = single_resource(my_context1);
-    auto access_second = single_resource(my_context2);
+    auto access_first = single_resource(ctx1);
+    auto access_second = single_resource(ctx2);
 
-    expect(that % 0 < my_context1.memory_used());
-    expect(that % 0 < my_context2.memory_used());
+    expect(that % 0 < ctx1.memory_used());
+    expect(that % 0 < ctx2.memory_used());
 
     auto check_access_first_blocked_by =
       [&](async::blocked_by p_state = async::blocked_by::io,
           std::source_location const& p_location =
             std::source_location::current()) {
         expect(that % static_cast<int>(p_state) ==
-               static_cast<int>(my_context1.state()))
+               static_cast<int>(ctx1.state()))
           << "line: " << p_location.line() << '\n';
       };
 
@@ -240,7 +238,7 @@ void async_context_suite()
       [&](async::blocked_by p_state = async::blocked_by::nothing,
           std::source_location const& p_location =
             std::source_location::current()) {
-        expect(that % p_state == my_context2.state())
+        expect(that % p_state == ctx2.state())
           << "line: " << p_location.line() << '\n';
       };
 
@@ -285,7 +283,7 @@ void async_context_suite()
     std::println("▶️ Resume 1st: 4, this should finish the operation");
     access_first.resume();
 
-    expect(that % my_context1.state() == async::blocked_by::nothing);
+    expect(that % ctx1.state() == async::blocked_by::nothing);
     expect(that % access_first.done());
 
     check_access_second_blocked_by(async::blocked_by::io);
@@ -295,11 +293,11 @@ void async_context_suite()
     io_in_use.unblock_and_clear();
     access_second.resume();
 
-    expect(that % my_context2.state() == async::blocked_by::nothing);
+    expect(that % ctx2.state() == async::blocked_by::nothing);
     expect(that % access_second.done());
 
-    expect(that % 0 == my_context1.memory_used());
-    expect(that % 0 == my_context2.memory_used());
+    expect(that % 0 == ctx1.memory_used());
+    expect(that % 0 == ctx2.memory_used());
   };
 
   "Cancellation"_test = []() {
@@ -582,7 +580,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context ctx(scheduler, 8192 * 2);
+    async::context ctx(scheduler, 8192);
     std::println("====================================");
     std::println("Running Proxy Context Test (no timeout normal behavior)");
     std::println("====================================");
@@ -645,7 +643,7 @@ void async_context_suite()
     // Setup
     auto scheduler =
       mem::make_strong_ptr<test_scheduler>(std::pmr::new_delete_resource());
-    async::context my_context1(scheduler, 8192);
+    async::context ctx1(scheduler, 8192);
     std::println("====================================");
     std::println("Running Proxy Context Test (with timeout)");
     std::println("====================================");
@@ -697,12 +695,12 @@ void async_context_suite()
       co_return -1;
     };
 
-    auto my_future = a(my_context1);
+    auto my_future = a(ctx1);
     auto value = my_future.sync_wait();
 
     expect(that % my_future.done());
     expect(that % -1 == value);
-    expect(that % 0 == my_context1.memory_used());
+    expect(that % 0 == ctx1.memory_used());
   };
 };
 }  // namespace async
