@@ -91,7 +91,7 @@ class async_context_conan(ConanFile):
             self.test_requires("benchmark/1.9.4")
 
     def requirements(self):
-        self.requires("strong_ptr/0.1.2")
+        pass
 
     def layout(self):
         cmake_layout(self)

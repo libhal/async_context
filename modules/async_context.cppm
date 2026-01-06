@@ -36,8 +36,6 @@ module;
 
 export module async_context;
 
-export import strong_ptr;
-
 namespace async::inline v0 {
 
 export using u8 = std::uint8_t;
@@ -126,15 +124,26 @@ export class operation_cancelled : public std::exception
  */
 using sleep_duration = std::chrono::nanoseconds;
 
+/**
+ * @brief Information about the block state when context::schedule is called
+ *
+ */
+export using block_info =
+  std::variant<std::monostate, sleep_duration, context*>;
+
 class promise_base;
 
 export class context
 {
 public:
   static auto constexpr default_timeout = sleep_duration(0);
-  using block_info = std::variant<std::monostate, sleep_duration, context*>;
 
   context() = default;
+
+  context(context const&) = delete;
+  context& operator=(context const&) = delete;
+  context(context&&) = delete;
+  context& operator=(context&&) = delete;
 
   /**
    * @brief Implementations of context must call this API in their constructor
@@ -255,7 +264,7 @@ private:
 
   struct proxy_info
   {
-    context* origin = nullptr;
+    context* original = nullptr;
     context* parent = nullptr;
   };
 
@@ -272,12 +281,12 @@ private:
   constexpr void transition_to(blocked_by p_new_state,
                                block_info p_info = std::monostate{}) noexcept
   {
-    schedule(*this, p_new_state, p_info);
+    m_state = p_new_state;
+    schedule(p_new_state, p_info);
   }
 
   [[nodiscard]] constexpr void* allocate(std::size_t p_bytes)
   {
-
     // The extra 1 word is for the stack pointer's address
     size_t const words_to_allocate = 1uz + ((p_bytes + mask) >> shift);
     auto const new_stack_index = m_stack_pointer + words_to_allocate;
@@ -308,17 +317,14 @@ private:
   /**
    * @brief Wrapper around call to do_schedule
    *
-   * This wrapper exists to allow future
+   * This wrapper exists to allow future extensibility
    *
-   * @param p_context
-   * @param p_block_state
-   * @param p_block_info
+   * @param p_block_state - state that this context has been set to
+   * @param p_block_info - information about the blocking conditions
    */
-  void schedule(context& p_context,
-                blocked_by p_block_state,
-                block_info p_block_info) noexcept
+  void schedule(blocked_by p_block_state, block_info p_block_info) noexcept
   {
-    return do_schedule(p_context, p_block_state, p_block_info);
+    return do_schedule(p_block_state, p_block_info);
   }
 
   /**
@@ -330,9 +336,8 @@ private:
    * and serialization is not necessary. For a thread pool implementation,
    * syncronization and serialization must be considered.
    *
-   * @param p_context - the context that is requested to be scheduled
    * @param p_block_state - the type of blocking event the context has
-   * encountered.
+   * occurred.
    * @param p_block_info - Information about what exactly is blocking this
    * context. If p_block_info is a sleep_duration, and the p_block_state is
    * blocked_by::time, then this context is requesting to be scheduled at that
@@ -344,8 +349,7 @@ private:
    * This can be used to determine when to schedule p_context again, but does
    * not have to be abided by for proper function.
    */
-  virtual void do_schedule(context& p_context,
-                           blocked_by p_block_state,
+  virtual void do_schedule(blocked_by p_block_state,
                            block_info p_block_info) noexcept = 0;
   friend class proxy_context;
 
@@ -366,10 +370,23 @@ static_assert(sizeof(context) <= std::hardware_constructive_interference_size,
 
 export class proxy_context : public context
 {
+public:
+  proxy_context(proxy_context const&) = delete;
+  proxy_context& operator=(proxy_context const&) = delete;
+  proxy_context(proxy_context&&) = delete;
+  proxy_context& operator=(proxy_context&&) = delete;
+
+  static proxy_context from(context& p_parent)
+  {
+    return { p_parent };
+  }
+
+private:
   proxy_context(context& p_parent)
   {
     m_active_handle = std::noop_coroutine();
     m_proxy = {};
+
     // We need to manually set:
     //    1. m_stack
     //    2. m_stack_pointer
@@ -377,33 +394,38 @@ export class proxy_context : public context
 
     // Our proxy will take control over the rest of the unused stack memory from
     // the above context.
-    m_stack =
-      p_parent.m_stack.last(p_parent.m_stack_pointer - p_parent.m_stack.data());
+    auto remaining_words = p_parent.m_stack_pointer - p_parent.m_stack.data();
+    m_stack = p_parent.m_stack.last(remaining_words);
     m_stack_pointer = m_stack.data();
 
-    // Shrink the stack of the parent context to be equal to the current stack
-    // index. This will prevent the parent context from being used again.
-    p_parent.m_stack = std::span(p_parent.m_stack.data(), m_stack_pointer);
+    // Shrink the parent's stack to its current stack pointer, preventing it
+    // from allocating again.
+    p_parent.m_stack = { p_parent.m_stack.data(), p_parent.m_stack_pointer };
 
     // If this is a proxy, take its pointer to the origin
     if (p_parent.is_proxy()) {
       m_proxy = proxy_info{
-        .origin = m_proxy.origin,
+        .original = m_proxy.original,
         .parent = &p_parent,
       };
     } else {  // Otherwise, the current parent is the origin.
       m_proxy = proxy_info{
-        .origin = &p_parent,
+        .original = &p_parent,
         .parent = &p_parent,
       };
     }
   }
 
-  void do_schedule(context& p_context,
-                   blocked_by p_block_state,
+  /**
+   * @brief Forwards the schedule call to the original context
+   *
+   * @param p_block_state - state that this context has been set to
+   * @param p_block_info - information about the blocking conditions
+   */
+  void do_schedule(blocked_by p_block_state,
                    block_info p_block_info) noexcept override
   {
-    m_proxy.origin->schedule(p_context, p_block_state, p_block_info);
+    m_proxy.original->schedule(p_block_state, p_block_info);
   }
 };
 
