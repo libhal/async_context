@@ -11,67 +11,149 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 #include <cassert>
 
 #include <chrono>
 #include <coroutine>
-#include <memory_resource>
+#include <memory>
 #include <print>
 #include <variant>
+#include <vector>
+
+#if not __ARM_EABI__
+#include <thread>
+#endif
 
 import async_context;
+
+struct round_robin_scheduler
+{
+  bool run_until_all_done(int p_iterations = 100)
+  {
+    for (int i = 0; i < p_iterations; i++) {
+      bool all_done = true;
+      for (auto const& ctx : contexts) {
+        if (not ctx->done()) {
+          all_done = false;
+          if (ctx->state() == async::blocked_by::nothing) {
+            ctx->resume();
+          }
+        }
+      }
+      if (all_done) {
+        return true;
+      }
+    }
+    return false;
+  }
+  std::vector<async::context*> contexts{};
+};
 
 struct test_context : public async::context
 {
   std::array<async::uptr, 8192> m_stack{};
-  int sleep_count = 0;
-  test_context()
+  // NOTE: the scheduler isn't used in this example, but if it were used, it
+  // would be called within the do_schedule function. For example, rather than
+  // performing a sleep that blocks the whole thread, the context and its time
+  // duration could be passed to an API on the "round_robin_scheduler", that
+  // makes it aware of the time schedule requirements.
+  std::shared_ptr<round_robin_scheduler> scheduler;
+
+  test_context(test_context const&) = delete;
+  test_context& operator=(test_context const&) = delete;
+  test_context(test_context&&) = delete;
+  test_context& operator=(test_context&&) = delete;
+
+  test_context(std::shared_ptr<round_robin_scheduler> const& p_scheduler)
+    : scheduler(p_scheduler)
   {
+    scheduler->contexts.push_back(this);
     this->initialize_stack_memory(m_stack);
   }
 
 private:
-  void do_schedule(async::blocked_by p_blocked_state,
-                   async::block_info) noexcept override
+  void do_schedule(
+    async::blocked_by p_blocked_state,
+    [[maybe_unused]] async::block_info p_block_info) noexcept override
   {
-    if (p_blocked_state == async::blocked_by::time) {
-      sleep_count++;
+    // Simulate I/O completion - immediately unblock
+    if (p_blocked_state == async::blocked_by::io) {
+      this->unblock_without_notification();
+    } else if (p_blocked_state == async::blocked_by::time) {
+#if not __ARM_EABI__
+      if (auto* time = std::get_if<std::chrono::nanoseconds>(&p_block_info)) {
+        // Just block this thread vs doing something smart
+        std::this_thread::sleep_for(*time);
+      }
+#endif
+      this->unblock_without_notification();
     }
   }
 };
 
-async::future<void> coro_double_delay(async::context&)
+// Simulates reading sensor data with I/O delay
+async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
   using namespace std::chrono_literals;
-  std::println("Delay for 500ms");
-  co_await 500ms;
-  std::println("Delay for another 500ms");
-  co_await 500ms;
-  std::println("Returning!");
-  co_return;
+  std::println("  ['{}': Sensor] Starting read...", p_name);
+  co_await ctx.block_by_io();  // Simulate I/O operation
+  std::println("  ['{}': Sensor] Read complete: 42", p_name);
+  co_return 42;
+}
+
+// Processes data with computation delay
+async::future<int> process_data(async::context& ctx,
+                                std::string_view p_name,
+                                int value)
+{
+  using namespace std::chrono_literals;
+  std::println("  ['{}': Process] Processing {}...", p_name, value);
+  co_await 10ms;  // Simulate processing time
+  int result = value * 2;
+  std::println("  ['{}': Process] Result: {}", p_name, result);
+  co_return result;
+}
+
+// Writes result with I/O delay
+async::future<void> write_actuator(async::context& ctx,
+                                   std::string_view p_name,
+                                   int value)
+{
+  std::println("  ['{}': Actuator] Writing {}...", p_name, value);
+  co_await ctx.block_by_io();
+  std::println("  ['{}': Actuator] Write complete!", p_name);
+}
+
+// Coordinates the full pipeline
+async::future<void> sensor_pipeline(async::context& ctx,
+                                    std::string_view p_name)
+{
+  std::println("Pipeline '{}' starting...", p_name);
+
+  int sensor_value = co_await read_sensor(ctx, p_name);
+  int processed = co_await process_data(ctx, p_name, sensor_value);
+  co_await write_actuator(ctx, p_name, processed);
+
+  std::println("Pipeline '{}' complete!\n", p_name);
 }
 
 int main()
 {
-  test_context ctx;
+  auto scheduler = std::make_shared<round_robin_scheduler>();
 
-  auto future_delay = coro_double_delay(ctx);
+  // Create context and add them to the scheduler
+  test_context ctx1(scheduler);
+  test_context ctx2(scheduler);
 
-  assert(not future_delay.done());
+  // Run two independent pipelines concurrently
+  auto pipeline1 = sensor_pipeline(ctx1, "System 1");
+  auto pipeline2 = sensor_pipeline(ctx2, "System 2");
 
-  future_delay.resume();
+  scheduler->run_until_all_done();
 
-  assert(ctx.sleep_count == 1);
+  assert(pipeline1.done());
+  assert(pipeline2.done());
 
-  future_delay.resume();
-
-  assert(ctx.sleep_count == 2);
-  assert(not future_delay.done());
-
-  future_delay.resume();
-
-  assert(future_delay.done());
-
+  std::println("Both pipelines completed successfully!");
   return 0;
 }

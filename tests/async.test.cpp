@@ -197,7 +197,7 @@ void async_context_suite()
 
       std::println("Executing 'single_resource' coroutine");
       while (io_in_use) {
-        // For some reason this segfaults on Linux
+        // TODO(#44): For some reason this segfaults on Linux
         // std::println("Resource unavailable, blocked by {}",
         //              io_in_use.address());
         co_await io_in_use.set_as_block_by_sync(p_context);
@@ -572,7 +572,7 @@ void async_context_suite()
     auto b = [&suspension_count](async::context&) -> future<int> {
       while (suspension_count < expected_suspensions) {
         suspension_count++;
-        // For some reason this segfaults on Linux
+        // TODO(#44): For some reason this segfaults on Linux
         // std::println("p_suspend_count = {}!", suspension_count);
         co_await std::suspend_always{};
       }
@@ -636,7 +636,7 @@ void async_context_suite()
       suspension_count = 0;
       while (suspension_count < expected_suspensions) {
         suspension_count++;
-        // For some reason this segfaults on Linux
+        // TODO(#44): For some reason this segfaults on Linux
         // std::println("p_suspend_count = {}!", suspension_count);
         co_await std::suspend_always{};
       }

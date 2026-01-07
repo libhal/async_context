@@ -21,6 +21,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package_and_upload_all_check:
     uses: libhal/ci/.github/workflows/package_and_upload_all.yml@5.x.y

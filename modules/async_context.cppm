@@ -108,7 +108,7 @@ export class operation_cancelled : public std::exception
 {
   [[nodiscard]] char const* what() const noexcept override
   {
-    return "An async::context ran out of memory!";
+    return "This future has been cancelled!";
   }
 };
 
@@ -217,6 +217,11 @@ public:
     }
   }
 
+  constexpr bool done()
+  {
+    return m_active_handle == std::noop_coroutine();
+  }
+
   void resume()
   {
     m_active_handle.resume();
@@ -291,7 +296,7 @@ private:
 #if DEBUGGING
     std::println("💾 Allocating {} words, current stack {}, new stack {}, "
                  "stack pointer member address: 0x{:x}",
-                 words_needed,
+                 words_to_allocate,
                  static_cast<void*>(m_stack_pointer),
                  static_cast<void*>(new_stack_index),
                  *m_stack_pointer);
@@ -822,15 +827,16 @@ public:
       return m_operation.m_state.index() >= 1;
     }
 
+    template<typename U>
     std::coroutine_handle<> await_suspend(
-      full_handle_type p_calling_coroutine) noexcept
+      std::coroutine_handle<promise<U>> p_calling_coroutine) noexcept
     {
       // This will not throw because the discriminate check was performed in
       // `await_ready()` via the done() function. `done()` checks if the state
       // is `handle_type` and if it is, it returns false, causing the code to
       // call await_suspend().
       auto handle = std::get<handle_type>(m_operation.m_state);
-      full_handle_type::from_address(handle.address())
+      std::coroutine_handle<promise<U>>::from_address(handle.address())
         .promise()
         .continuation(p_calling_coroutine);
       return handle;
