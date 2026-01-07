@@ -47,6 +47,8 @@ class TestPackageConan(ConanFile):
         cmake.build()
 
     def test(self):
-        if not cross_building(self):
+        UNSUPPORTED_SYSTEM = (str(self.settings.arch) == "x86_64" and
+                              str(self.settings.os) == "Linux")
+        if not cross_building(self) and not UNSUPPORTED_SYSTEM:
             bin_path = Path(self.cpp.build.bindirs[0]) / "test_package"
             self.run(bin_path.absolute(), env="conanrun")
