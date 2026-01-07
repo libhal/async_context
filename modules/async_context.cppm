@@ -108,7 +108,7 @@ export class operation_cancelled : public std::exception
 {
   [[nodiscard]] char const* what() const noexcept override
   {
-    return "An async::context ran out of memory!";
+    return "This future has been cancelled!";
   }
 };
 

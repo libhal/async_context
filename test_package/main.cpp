@@ -15,10 +15,14 @@
 
 #include <chrono>
 #include <coroutine>
+#include <memory>
 #include <print>
-#include <thread>
 #include <variant>
 #include <vector>
+
+#if not __ARM_EABI__
+#include <thread>
+#endif
 
 import async_context;
 
@@ -27,14 +31,16 @@ struct round_robin_scheduler
   bool run_until_all_done(int p_iterations = 100)
   {
     for (int i = 0; i < p_iterations; i++) {
-      bool any_active = false;
+      bool all_done = true;
       for (auto const& ctx : contexts) {
-        if (ctx->state() == async::blocked_by::nothing) {
-          any_active = true;
-          ctx->resume();
+        if (not ctx->done()) {
+          all_done = false;
+          if (ctx->state() == async::blocked_by::nothing) {
+            ctx->resume();
+          }
         }
       }
-      if (not any_active) {
+      if (all_done) {
         return true;
       }
     }
@@ -46,25 +52,40 @@ struct round_robin_scheduler
 struct test_context : public async::context
 {
   std::array<async::uptr, 8192> m_stack{};
-  round_robin_scheduler* scheduler = nullptr;
+  // NOTE: the scheduler isn't used in this example, but if it were used, it
+  // would be called within the do_schedule function. For example, rather than
+  // performing a sleep that blocks the whole thread, the context and its time
+  // duration could be passed to an API on the "round_robin_scheduler", that
+  // makes it aware of the time schedule requirements.
+  std::shared_ptr<round_robin_scheduler> scheduler;
 
-  test_context(round_robin_scheduler& sched)
-    : scheduler(&sched)
+  test_context(test_context const&) = delete;
+  test_context& operator=(test_context const&) = delete;
+  test_context(test_context&&) = delete;
+  test_context& operator=(test_context&&) = delete;
+
+  test_context(std::shared_ptr<round_robin_scheduler> const& p_scheduler)
+    : scheduler(p_scheduler)
   {
+    scheduler->contexts.push_back(this);
     this->initialize_stack_memory(m_stack);
   }
 
 private:
-  void do_schedule(async::blocked_by p_blocked_state,
-                   async::block_info p_block_info) noexcept override
+  void do_schedule(
+    async::blocked_by p_blocked_state,
+    [[maybe_unused]] async::block_info p_block_info) noexcept override
   {
     // Simulate I/O completion - immediately unblock
     if (p_blocked_state == async::blocked_by::io) {
       this->unblock_without_notification();
     } else if (p_blocked_state == async::blocked_by::time) {
+#if not __ARM_EABI__
       if (auto* time = std::get_if<std::chrono::nanoseconds>(&p_block_info)) {
+        // Just block this thread vs doing something smart
         std::this_thread::sleep_for(*time);
       }
+#endif
       this->unblock_without_notification();
     }
   }
@@ -118,19 +139,17 @@ async::future<void> sensor_pipeline(async::context& ctx,
 
 int main()
 {
-  round_robin_scheduler scheduler;
+  auto scheduler = std::make_shared<round_robin_scheduler>();
 
+  // Create context and add them to the scheduler
   test_context ctx1(scheduler);
   test_context ctx2(scheduler);
-
-  scheduler.contexts.push_back(&ctx1);
-  scheduler.contexts.push_back(&ctx2);
 
   // Run two independent pipelines concurrently
   auto pipeline1 = sensor_pipeline(ctx1, "System 1");
   auto pipeline2 = sensor_pipeline(ctx2, "System 2");
 
-  scheduler.run_until_all_done();
+  scheduler->run_until_all_done();
 
   assert(pipeline1.done());
   assert(pipeline2.done());
