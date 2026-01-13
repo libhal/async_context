@@ -205,7 +205,6 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
 
     expect(throws<std::runtime_error>([&]() {
       future.resume();
-      future.resume();
     }))
       << "runtime_error exception was not thrown!";
     expect(that % future.done());
