@@ -222,6 +222,27 @@ static void bm_virtual_call_variant(benchmark::State& state)
 }
 BENCHMARK(bm_virtual_call_variant);
 
+/**
+ * @brief Sync wait a future
+ *
+ * This is only safe is the operation never blocks by time. For this benchmark,
+ * that should always be the case.
+ *
+ * @tparam T - type of the future
+ * @param p_future - future to finish
+ * @return auto - result T
+ */
+template<typename T>
+auto sync_wait(async::future<T>& p_future)
+{
+  while (not p_future.done()) {
+    p_future.resume();
+  }
+  if constexpr (not std::is_void_v<T>) {
+    return std::move(p_future.value());
+  }
+}
+
 // ----------------------------------------------------------------------------
 // 3. FUTURE SYNC: Non-coroutine functions returning future<int>, 3 levels deep
 //    These functions directly construct future with a value (no coroutine)
@@ -238,7 +259,7 @@ __attribute__((noinline)) async::future<int> sync_future_level2(
   int x)
 {
   auto f = sync_future_level3(ctx, x);
-  return f.sync_wait() + 1;
+  return sync_wait(f) + 1;
 }
 
 __attribute__((noinline)) async::future<int> sync_future_level1(
@@ -246,7 +267,7 @@ __attribute__((noinline)) async::future<int> sync_future_level1(
   int x)
 {
   auto f = sync_future_level2(ctx, x);
-  return f.sync_wait() + 1;
+  return sync_wait(f) + 1;
 }
 struct benchmark_context : public async::context
 {
@@ -271,7 +292,7 @@ static void bm_future_sync_return(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = sync_future_level1(ctx, input);
-    int result = f.sync_wait();
+    int result = sync_wait(f);
     benchmark::DoNotOptimize(result);
   }
 }
@@ -308,7 +329,7 @@ static void bm_future_coroutine(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = coro_level1(ctx, input);
-    int result = f.sync_wait();
+    int result = sync_wait(f);
     benchmark::DoNotOptimize(result);
   }
 }
@@ -349,7 +370,7 @@ static void bm_future_sync_await(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = sync_in_coro_level1(ctx, input);
-    int result = f.sync_wait();
+    int result = sync_wait(f);
     benchmark::DoNotOptimize(result);
   }
 }
@@ -370,7 +391,8 @@ __attribute__((noinline)) async::future<int> mixed_sync_level2(
   async::context& ctx,
   int x)
 {
-  return mixed_sync_level3(ctx, x).sync_wait() + 1;
+  auto future = mixed_sync_level3(ctx, x);
+  return sync_wait(future) + 1;
 }
 
 __attribute__((noinline)) async::future<int> mixed_coro_level1(
@@ -389,7 +411,7 @@ static void bm_future_mixed(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = mixed_coro_level1(ctx, input);
-    int result = f.sync_wait();
+    int result = sync_wait(f);
     benchmark::DoNotOptimize(result);
   }
 }
@@ -431,7 +453,7 @@ static void bm_future_void_coroutine(benchmark::State& state)
   int output = 0;
   for (auto _ : state) {
     auto f = void_coro_level1(ctx, output, input);
-    f.sync_wait();
+    sync_wait(f);
     benchmark::DoNotOptimize(f);
     benchmark::DoNotOptimize(output);
   }

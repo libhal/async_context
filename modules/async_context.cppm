@@ -23,7 +23,6 @@ module;
 #include <chrono>
 #include <coroutine>
 #include <exception>
-#include <memory_resource>
 #include <new>
 #include <span>
 #include <type_traits>
@@ -42,30 +41,73 @@ export using u8 = std::uint8_t;
 export using byte = std::uint8_t;
 export using usize = std::size_t;
 export using uptr = std::uintptr_t;
+
 constexpr size_t mask = sizeof(uptr) - 1uz;
 constexpr size_t shift = std::countr_zero(sizeof(uptr));
 
 export enum class blocked_by : u8 {
-  /// Not blocked by anything, ready to run!
+  /// Not blocked by anything, ready to run, can be resumed.
   nothing = 0,
 
   /// Blocked by a time duration that must elapse before resuming.
+  ///
+  /// Another way of saying this is that the active coroutine is requesting to
+  /// be rescheduled at or after the time duration provided. The sleep time
+  /// provided is the minimum that a scheduler must wait before resuming the
+  /// coroutine. If the coroutine is resumed earlier, then this is erroneous
+  /// behavior. This behavior is clearly wrong, but is well defined. The
+  /// coroutine will resume earlier than it had anticipated, which can cause
+  /// other problems down the line. For example, if a coroutine resets a device
+  /// and must wait 50ms before attempting to communicate with it again. If that
+  /// time isn't upheld, then the code may thrown an exception when the device
+  /// is not online by the time of resumption.
+  ///
+  /// This blocked by state is special in that it is not poll-able. Unlike the
+  /// blocked by states below, when a coroutine requests to be rescheduled, the
+  /// scheduler must ensure that the context/future it is bound to is resumed at
+  /// the right time.
   time = 1,
 
   /// Blocked by an I/O operation (DMA, bus transaction, etc.).
   /// An interrupt or I/O completion will call unblock() when ready.
+  ///
+  /// This blocked by state is poll-able, meaning that the coroutine may be
+  /// resumed before the context is unblocked.
+  /// Coroutines MUST check that their I/O operations have completed before
+  /// continuing on with their operations. If a coroutine is resumed and their
+  /// I/O operation is still pending, those coroutines should block themselves
+  /// by I/O again to signal to the scheduler that they are not ready yet.
+  ///
+  /// A time estimate may be provided to the scheduler to give extra information
+  /// about when to poll or reschedule the context again. The time information
+  /// may be ignored.
   io = 2,
 
-  /// Blocked by a synchronization primitive or resource contention.
+  /// Blocked by a resource contention.
+  ///
   /// Examples: mutex, semaphore, two coroutines competing for an I2C bus.
-  /// The transition handler may integrate with OS schedulers or implement
-  /// priority inheritance strategies.
+  ///
+  /// If the coroutine is resumed, the coroutine should check that it can
+  /// acquire the resource before assuming that it can. Just like I/O, if the
+  /// coroutine determines that its still blocked by sync, then it must re-block
+  /// itself by sync.
   sync = 3,
 
   /// Blocked by an external coroutine outside the async::context system.
-  /// Examples: co_awaiting std::task, std::generator, or third-party async
-  /// types. The transition handler has no control over scheduling - it can only
-  /// wait for the external coroutine's await_resume() to call unblock().
+  ///
+  /// Examples: co_awaiting a std::task, std::generator, or third-party
+  /// coroutine library.
+  ///
+  /// A coroutine invoking a 3rd party async library is considered to be a
+  /// coroutine supervisor. A coroutine supervisor stays as the active coroutine
+  /// on its context, and must manually resume the 3rd party async library until
+  /// it finishes. This is important since the async context scheduler has no
+  /// knowledge of the 3rd party async operation and how it works.
+  ///
+  /// If the external async library has the ability to call unblock() on the
+  /// context, then it should, but is not mandated to do so. Like I/O, this is
+  /// pollable by a scheduler and the coroutine code should block on external if
+  /// the external coroutine is still active.
   external = 4,
 };
 
@@ -104,6 +146,10 @@ export struct bad_coroutine_alloc : std::bad_alloc
   context const* violator;
 };
 
+/**
+ * @brief Thrown when a coroutine awaits a cancelled future
+ *
+ */
 export class operation_cancelled : public std::exception
 {
   [[nodiscard]] char const* what() const noexcept override
@@ -122,7 +168,7 @@ export class operation_cancelled : public std::exception
  * @brief The data type for sleep time duration
  *
  */
-using sleep_duration = std::chrono::nanoseconds;
+export using sleep_duration = std::chrono::nanoseconds;
 
 /**
  * @brief Information about the block state when context::schedule is called
@@ -210,13 +256,6 @@ public:
     m_active_handle = p_active_handle;
   }
 
-  void sync_wait()
-  {
-    while (m_active_handle != std::noop_coroutine()) {
-      m_active_handle.resume();
-    }
-  }
-
   constexpr bool done()
   {
     return m_active_handle == std::noop_coroutine();
@@ -224,7 +263,11 @@ public:
 
   void resume()
   {
-    m_active_handle.resume();
+    // We cannot resume the a coroutine blocked by time.
+    // Only the scheduler can unblock a context state.
+    if (m_state != blocked_by::time) {
+      m_active_handle.resume();
+    }
   }
 
   /**
@@ -431,6 +474,60 @@ private:
   }
 };
 
+export class basic_context : public context
+{
+public:
+  basic_context() = default;
+  ~basic_context() override = default;
+
+  [[nodiscard]] constexpr sleep_duration pending_delay() const noexcept
+  {
+    return m_pending_delay;
+  }
+
+  /**
+   * @brief Perform sync_wait operation
+   *
+   * @tparam DelayFunc
+   * @param p_delay - a delay function, that accepts a sleep duration and
+   * returns void.
+   */
+  void sync_wait(std::invocable<sleep_duration> auto&& p_delay)
+  {
+    while (active_handle() != std::noop_coroutine()) {
+      active_handle().resume();
+
+      if (state() == blocked_by::time && m_pending_delay > sleep_duration(0)) {
+        p_delay(m_pending_delay);
+        m_pending_delay = sleep_duration(0);
+        unblock_without_notification();
+      }
+    }
+  }
+
+private:
+  /**
+   * @brief Forwards the schedule call to the original context
+   *
+   * @param p_block_state - state that this context has been set to
+   * @param p_block_info - information about the blocking conditions
+   */
+  void do_schedule(blocked_by p_block_state,
+                   block_info p_block_info) noexcept override
+  {
+    if (p_block_state == blocked_by::time) {
+      if (auto* ex = std::get_if<sleep_duration>(&p_block_info)) {
+        m_pending_delay = *ex;
+      } else {
+        m_pending_delay = sleep_duration{ 0 };
+      }
+    }
+    // Ignore the rest and poll them...
+  }
+
+  sleep_duration m_pending_delay{ 0 };
+};
+
 export class context_token
 {
 public:
@@ -506,6 +603,24 @@ public:
 
 private:
   uptr m_context_address = 0U;
+};
+
+export struct io
+{
+  io(sleep_duration p_duration = sleep_duration{ 0u })
+    : m_duration(p_duration)
+  {
+  }
+  sleep_duration m_duration;
+};
+
+export struct sync
+{
+  sync(context_token p_context)
+    : m_context(p_context)
+  {
+  }
+  context_token m_context;
 };
 
 // =============================================================================
@@ -596,6 +711,12 @@ public:
     return m_context->block_by_time(p_sleep_duration);
   }
 
+  constexpr std::suspend_always await_transform() noexcept
+  {
+    m_context->block_by_io();
+    return {};
+  }
+
   template<typename U>
   constexpr U&& await_transform(U&& p_awaitable) noexcept
   {
@@ -645,6 +766,15 @@ struct cancelled_state
 {};
 
 /**
+ * @brief Represents a future that is currently busy.
+ *
+ * The purpose of this state is to report that a future is currently in a busy
+ * state without exposing the coroutine handle.
+ */
+struct busy_state
+{};
+
+/**
  * @brief Defines the states that a future can be in
  *
  * @tparam T - the type for the future to eventually provide to the owner of
@@ -657,6 +787,7 @@ using future_state =
                cancelled_state,          // 2 - cancelled
                std::exception_ptr        // 3 - exception
                >;
+
 template<class Promise>
 struct final_awaiter
 {
@@ -770,8 +901,9 @@ public:
       full_handle_type::from_address(handle.address())
         .promise()
         .get_context()
-        .active_handle()
         .resume();
+    } else if (std::holds_alternative<std::exception_ptr>(m_state)) {
+      std::rethrow_exception(std::get<std::exception_ptr>(m_state));
     }
   }
 
@@ -799,14 +931,12 @@ public:
   }
 
   /**
-   * @brief Extract result value from async operation.
-   *
-   * Throws std::bad_variant_access if `done()` return false or `cancelled()`
-   * return true.
+   * @brief Extract value from async operation.
    *
    * @return Type - reference to the value from this async operation.
+   * @throws std::bad_variant_access if `has_value()` return false
    */
-  [[nodiscard]] constexpr monostate_or<T>& result()
+  [[nodiscard]] constexpr monostate_or<T>& value()
     requires(not std::is_void_v<T>)
   {
     return std::get<T>(m_state);
@@ -872,41 +1002,6 @@ public:
   [[nodiscard]] constexpr awaiter operator co_await() noexcept
   {
     return awaiter{ *this };
-  }
-
-  /**
-   * @brief Run future synchronously until the future is done
-   *
-   */
-  void sync_wait()
-    requires(std::is_void_v<T>)
-  {
-    while (not done()) {
-      resume();
-    }
-
-    if (auto* ex = std::get_if<std::exception_ptr>(&m_state)) [[unlikely]] {
-      std::rethrow_exception(*ex);
-    }
-  }
-
-  /**
-   * @brief Run synchronously until the future is done and return its result
-   *
-   * @returns monostate_or<T> - Returns a reference to contained object
-   */
-  monostate_or<T>& sync_wait()
-    requires(not std::is_void_v<T>)
-  {
-    while (not done()) {
-      resume();
-    }
-
-    if (auto* ex = std::get_if<std::exception_ptr>(&m_state)) [[unlikely]] {
-      std::rethrow_exception(*ex);
-    }
-
-    return std::get<T>(m_state);
   }
 
   template<typename U>
