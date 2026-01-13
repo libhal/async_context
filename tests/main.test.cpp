@@ -12,16 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// export module libahl_unit_tests;
-
 namespace async {
-// Extern position dependant test go here. Refrain from using this whenever
-// possible.
-extern void async_context_suite();
 }  // namespace async
 
 int main()
 {
-  // Position dependent test go below:
-  async::async_context_suite();
 }

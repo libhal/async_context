@@ -79,10 +79,18 @@ else()
     message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
     # Add module files
-    target_sources(async_unit_test
-    PRIVATE
+    target_sources(async_unit_test PUBLIC
+        FILE_SET CXX_MODULES
+        TYPE CXX_MODULES
+        FILES
+        tests/util.cppm
+        PRIVATE
         tests/main.test.cpp
-        tests/async.test.cpp
+        tests/basics.test.cpp
+        tests/blocked_by.test.cpp
+        tests/cancel.test.cpp
+        tests/guards.test.cpp
+        tests/proxy.test.cpp
     )
 
     target_compile_features(async_unit_test PUBLIC cxx_std_23)
