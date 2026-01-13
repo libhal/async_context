@@ -902,7 +902,9 @@ public:
         .promise()
         .get_context()
         .resume();
-    } else if (std::holds_alternative<std::exception_ptr>(m_state)) {
+    }
+
+    if (std::holds_alternative<std::exception_ptr>(m_state)) {
       std::rethrow_exception(std::get<std::exception_ptr>(m_state));
     }
   }
@@ -947,7 +949,8 @@ public:
   {
     future<T>& m_operation;
 
-    constexpr explicit awaiter(future<T>& p_operation) noexcept
+    constexpr explicit awaiter(future<T>& p_operation
+                               [[clang::lifetimebound]]) noexcept
       : m_operation(p_operation)
     {
     }
@@ -975,26 +978,29 @@ public:
     constexpr monostate_or<T>& await_resume() const
       requires(not std::is_void_v<T>)
     {
-      // Combined with await_ready's `>= 1`, this becomes `== 1`
-      if (m_operation.m_state.index() < 2) [[likely]] {
-        return *std::get_if<1>(&m_operation.m_state);
+      if (std::holds_alternative<T>(m_operation.m_state)) [[likely]] {
+        return std::get<T>(m_operation.m_state);
+      } else if (std::holds_alternative<std::exception_ptr>(
+                   m_operation.m_state)) [[unlikely]] {
+        std::rethrow_exception(
+          std::get<std::exception_ptr>(m_operation.m_state));
       }
-      // index >= 2, error territory
-      if (m_operation.m_state.index() == 3) {
-        std::rethrow_exception(*std::get_if<3>(&m_operation.m_state));
-      }
+
       throw operation_cancelled{};
     }
 
     constexpr void await_resume() const
       requires(std::is_void_v<T>)
     {
-      if (m_operation.m_state.index() < 2) [[likely]] {
+      if (std::holds_alternative<std::monostate>(m_operation.m_state))
+        [[likely]] {
         return;
+      } else if (std::holds_alternative<std::exception_ptr>(
+                   m_operation.m_state)) [[unlikely]] {
+        std::rethrow_exception(
+          std::get<std::exception_ptr>(m_operation.m_state));
       }
-      if (m_operation.m_state.index() == 3) {
-        std::rethrow_exception(*std::get_if<3>(&m_operation.m_state));
-      }
+
       throw operation_cancelled{};
     }
   };
@@ -1079,6 +1085,13 @@ private:
   future_state<T> m_state{};
 };
 
+/**
+ * @brief An async task is an async operation that performs some work but
+ * doesn't return a value.
+ *
+ */
+export using task = future<void>;
+
 template<typename T>
 constexpr future<T> promise<T>::get_return_object() noexcept
 {
@@ -1088,7 +1101,7 @@ constexpr future<T> promise<T>::get_return_object() noexcept
   return future<T>{ handle };
 }
 
-inline constexpr future<void> promise<void>::get_return_object() noexcept
+constexpr future<void> promise<void>::get_return_object() noexcept
 {
   using future_handle = std::coroutine_handle<promise<void>>;
   auto handle = future_handle::from_promise(*this);
