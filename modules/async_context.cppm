@@ -819,8 +819,35 @@ struct final_awaiter
   }
 };
 
+template<typename T>
+struct promise_return_base
+{
+  template<typename U>
+  void return_value(U&& p_value) noexcept
+    requires std::is_constructible_v<T, U&&>
+  {
+    // set future to its awaited T value
+    m_future_state->template emplace<T>(std::forward<U>(p_value));
+  }
+
+  future_state<T>* m_future_state;
+};
+
+template<>
+struct promise_return_base<void>
+{
+  void return_void() noexcept
+  {
+    *m_future_state = std::monostate{};
+  }
+
+  future_state<void>* m_future_state;
+};
+
 export template<typename T>
-class promise : public promise_base
+class promise
+  : public promise_base
+  , public promise_return_base<T>
 {
 public:
   using promise_base::promise_base;  // Inherit constructors
@@ -837,53 +864,10 @@ public:
 
   void unhandled_exception() noexcept
   {
-    *m_future_state = std::current_exception();
+    *promise_return_base<T>::m_future_state = std::current_exception();
   }
 
   constexpr future<T> get_return_object() noexcept;
-
-  template<typename U>
-  void return_value(U&& p_value) noexcept
-    requires std::is_constructible_v<T, U&&>
-  {
-    // set future to its awaited T value
-    m_future_state->template emplace<T>(std::forward<U>(p_value));
-  }
-
-protected:
-  future_state<T>* m_future_state;
-};
-
-export template<>
-class promise<void> : public promise_base
-{
-public:
-  using promise_base::promise_base;  // Inherit constructors
-  using promise_base::operator new;
-  using promise_base::operator delete;
-  using our_handle = std::coroutine_handle<promise<void>>;
-
-  friend class future<void>;
-
-  constexpr final_awaiter<promise<void>> final_suspend() noexcept
-  {
-    return {};
-  }
-
-  constexpr future<void> get_return_object() noexcept;
-
-  void unhandled_exception() noexcept
-  {
-    *m_future_state = std::current_exception();
-  }
-
-  void return_void() noexcept
-  {
-    *m_future_state = std::monostate{};
-  }
-
-protected:
-  future_state<void>* m_future_state;
 };
 
 export template<typename T>
@@ -1099,14 +1083,6 @@ constexpr future<T> promise<T>::get_return_object() noexcept
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
   return future<T>{ handle };
-}
-
-constexpr future<void> promise<void>::get_return_object() noexcept
-{
-  using future_handle = std::coroutine_handle<promise<void>>;
-  auto handle = future_handle::from_promise(*this);
-  m_context->active_handle(handle);
-  return future<void>{ handle };
 }
 
 void context::unsafe_cancel()
