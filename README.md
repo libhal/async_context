@@ -160,14 +160,14 @@ async::future<void> delay_example(async::context& p_ctx) {
 
 ```cpp
 async::future<void> io_example(async::context& p_ctx) {
-    dma_controller.on_completion([&ctx]() {
-      ctx.unblock();
+    dma_controller.on_completion([&p_ctx]() {
+      p_ctx.unblock();
     });
 
     // Start DMA transaction...
 
     while (!dma_complete) {
-        co_await ctx.block_by_io();
+        co_await p_ctx.block_by_io();
     }
     co_return;
 }
@@ -229,6 +229,32 @@ ctx.sync_wait([](async::sleep_duration p_sleep_time) {
 });
 ```
 
+## Exception Handling
+
+Exceptions thrown in coroutines are propagated through the coroutine chain
+until it reaches the top level coroutine. When the top level is reached, the
+exception will be thrown from a call to `.resume()`.
+
+```cpp
+async::future<void> may_throw(async::context& p_ctx) {
+    throw std::runtime_error("error");
+    co_return;
+}
+
+async::future<void> just_calls(async::context& p_ctx) {
+    co_await may_throw(p_ctx);
+    co_return;
+}
+
+simple_context ctx;
+auto future = may_throw(ctx);
+try {
+    future.resume();
+} catch (const std::runtime_error& e) {
+    // Handle exception
+}
+```
+
 ### Proxy Context for Timeouts
 
 ```cpp
@@ -249,29 +275,88 @@ async::future<int> supervised(async::context& p_ctx) {
 }
 ```
 
-## Exception Handling
+`async::proxy_context::from()`: consumes the rest of the stack memory of the
+context for itself. The original context's stack memory will be clamped to
+where it was when it called the `supervised` function.  The stack memory is
+restored to the original context, once the proxy is destroyed. This prevents
+the context from being used again and overwriting the memory of the stack.
 
-Exceptions thrown in coroutines are propagated through the coroutine chain
-until it reaches the top level coroutine. When the top level is reached, the
-exception will be thrown from a call to `.resume()`.
+Each coroutine frame is allowed to have at most 1 proxy on its stack. This
+allows for top down chaining of proxies as shown below. When a proxy blocks by
+something, that blocking state is communicated to the original context and its
+schedule function is executed. When the original context is resumed, it will
+execute from its active coroutine which contains a proxy. That coroutine may
+check for timeouts and resume its supervised future. Then that future may have
+yet another proxy which performs the same work of timeout detection as before
+and resumes the future it has supervision for. This continues on until the
+bottom is reached or a coroutine decides to cancel its future or exit via
+exception or normal return path.
 
-```cpp
-async::future<void> may_throw(async::context& ctx) {
-    throw std::runtime_error("error");
-    co_return;
-}
+This naturally gives the top most supervising coroutine priority to determine
+if its time frame has expired.
 
-async::future<void> just_calls(async::context& ctx) {
-    co_await may_throw(ctx);
-    co_return;
-}
-
-auto future = may_throw(ctx);
-try {
-    future.resume();
-} catch (const std::runtime_error& e) {
-    // Handle exception
-}
+```ascii
+┌─────────────────────────────┐ Address 0
+│  &context::m_stack_pointer  │
+├─────────────────────────────┤
+│     Coroutine Frame A       │
+│     (promise + locals)      │
+│           (96 B)            │
+├─────────────────────────────┤
+│  &context::m_stack_pointer  │
+├─────────────────────────────┤
+│     Coroutine Frame B       │
+│           (64 B)            │
+│     (promise + locals)      │
+├─────────────────────────────┤
+│  &context::m_stack_pointer  │ <-- Origin Stack ends here
+├─────────────────────────────┤    (m_stack_pointer shrunk to here)
+│     Coroutine Frame C       │
+│           (128 B)           │    Proxy-1 Stack begins
+│     (promise + locals)      │
+│                             │
+├─────────────────────────────┤
+│  &proxy1::m_stack_pointer   │
+├─────────────────────────────┤
+│     Coroutine Frame D       │
+│           (80 B)            │
+│     (promise + locals)      │
+├─────────────────────────────┤
+│  &proxy1::m_stack_pointer   │
+├─────────────────────────────┤
+│     Coroutine Frame E       │
+│           (72 B)            │
+│     (promise + locals)      │
+├─────────────────────────────┤
+│  &proxy1::m_stack_pointer   │ <-- Proxy-1 Stack ends here
+├─────────────────────────────┤
+│     Coroutine Frame F       │
+│           (96 B)            │    Proxy-2 Stack begins
+│     (promise + locals)      │
+├─────────────────────────────┤
+│  &proxy2::m_stack_pointer   │
+├─────────────────────────────┤
+│     Coroutine Frame G       │
+│           (144 B)           │
+│     (promise + locals)      │
+│                             │
+├─────────────────────────────┤
+│  &proxy2::m_stack_pointer   │ <-- Proxy-2 Stack ends here
+├─────────────────────────────┤
+│     Coroutine Frame H       │
+│           (88 B)            │    Proxy-3 Stack begins
+│     (promise + locals)      │
+├─────────────────────────────┤
+│  &proxy3::m_stack_pointer   │ <-- Proxy-3 current position
+├─────────────────────────────┤
+│        Unused Memory        │
+│                             │
+│                             │
+│                             │
+│                             │
+│                             │
+│                             │
+└─────────────────────────────┘ Address N (bytes of stack memory)
 ```
 
 ## Creating the package
