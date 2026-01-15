@@ -60,7 +60,7 @@ contiguous buffer of memory that grows upward as coroutines are called.
 │                             │
 │                             │
 ├─────────────────────────────┤
-│    Stack pointer address    │
+│  &context::m_stack_pointer  │
 ├─────────────────────────────┤
 │     Coroutine Frame C       │
 |           (128 B)           │
