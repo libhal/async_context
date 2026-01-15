@@ -270,17 +270,6 @@ public:
     }
   }
 
-  /**
-   * @brief Unsafe cancel will cancel a context's async operation
-   *
-   * This operation is labelled as "unsafe" because it this API does not update
-   * the top level  future<T> object that was initially bound to this context,
-   * to the "cancelled" state. Because of this, using/accessing that future<T>
-   * in anyway is considered UB.
-   *
-   */
-  void unsafe_cancel();
-
   [[nodiscard]] constexpr auto memory_used() const noexcept
   {
     return m_stack_pointer - m_stack.data();
@@ -1029,21 +1018,6 @@ public:
     return *this;
   }
 
-  void cancel()
-  {
-    // TODO(#37): consider if cancel should check the context state for blocked
-    // by io or external and skip cancellation if thats the case.
-    if (std::holds_alternative<handle_type>(m_state)) {
-      std::get<handle_type>(m_state).destroy();
-    }
-    m_state = cancelled_state{};
-  }
-
-  bool is_cancelled()
-  {
-    return std::holds_alternative<cancelled_state>(m_state);
-  }
-
   constexpr ~future()
   {
     if (std::holds_alternative<handle_type>(m_state)) {
@@ -1083,28 +1057,5 @@ constexpr future<T> promise<T>::get_return_object() noexcept
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
   return future<T>{ handle };
-}
-
-void context::unsafe_cancel()
-{
-  // TODO(#38): Consider if a safe variant of cancel is achievable
-  if (m_active_handle == std::noop_coroutine()) {
-    return;
-  }
-
-  auto index = m_active_handle;
-
-  while (true) {
-    using base_handle = std::coroutine_handle<promise_base>;
-    auto top = base_handle::from_address(index.address());
-    auto continuation = top.promise().m_continuation;
-    if (continuation == std::noop_coroutine()) {
-      // We have found our top level coroutine
-      top.destroy();
-      m_stack_pointer = m_stack.data();
-      return;
-    }
-    index = continuation;
-  }
 }
 }  // namespace async::inline v0
