@@ -1,5 +1,11 @@
 # async_context
 
+[![✅ CI](https://github.com/libhal/async_context/actions/workflows/ci.yml/badge.svg)](https://github.com/libhal/async_context/actions/workflows/ci.yml)
+[![Standard](https://img.shields.io/badge/C%2B%2B-23-C%2B%2B23?logo=c%2B%2B&color=00599C&style=flat)](https://isocpp.org/std/the-standard)
+[![GitHub stars](https://img.shields.io/github/stars/libhal/libhal.svg)](https://github.com/libhal/async_context/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/libhal/libhal.svg)](https://github.com/libhal/async_context/network)
+[![GitHub issues](https://img.shields.io/github/issues/libhal/libhal.svg)](https://github.com/libhal/async_context/issues)
+
 A lightweight, C++23 coroutine library for embedded systems and
 resource-constrained environments. Built with stack-based allocation to avoid
 heap usage and designed to fit within a single cache line for optimal
