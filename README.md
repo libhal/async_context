@@ -32,32 +32,9 @@ contiguous buffer of memory that grows upward as coroutines are called.
 
 ### Memory Layout
 
-```mermaid
-block-beta
-  columns 8
-
-  block:stack:8
-    columns 8
-    A["&m_stack_pointer"]:1
-    B["Coroutine Frame A"]:3
-    C["&m_stack_pointer"]:1
-    D["Coroutine Frame B"]:2
-    E["..."]:1
-  end
-
-  space:5
-  F["m_stack_pointer"]:1
-  space:2
-
-  F --> E
-
-  style A fill:#4a9,stroke:#333
-  style C fill:#4a9,stroke:#333
-  style B fill:#69b,stroke:#333
-  style D fill:#69b,stroke:#333
-  style E fill:#ddd,stroke:#333
-  style F fill:#f96,stroke:#333
-```
+> [!NOTE]
+>
+> Will add a diagram here later
 
 ### How Allocation Works
 
@@ -74,37 +51,6 @@ block-beta
 This creates a strict LIFO (stack) discipline—coroutines must complete in
 reverse order of their creation, which naturally matches how `co_await` chains
 work.
-
-### Allocation Sequence
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Context
-    participant Stack
-
-    Note over Stack: Initial state: m_stack_pointer at start
-
-    Caller->>Context: Call coroutine A
-    Context->>Stack: Store &m_stack_pointer
-    Context->>Stack: Allocate Frame A
-    Note over Stack: m_stack_pointer advances
-
-    Caller->>Context: A calls coroutine B
-    Context->>Stack: Store &m_stack_pointer
-    Context->>Stack: Allocate Frame B
-    Note over Stack: m_stack_pointer advances
-
-    Note over Caller: B completes (co_return)
-    Context->>Stack: Read &m_stack_pointer from before Frame B
-    Context->>Stack: Reset m_stack_pointer (deallocate B)
-
-    Note over Caller: A completes (co_return)
-    Context->>Stack: Read &m_stack_pointer from before Frame A
-    Context->>Stack: Reset m_stack_pointer (deallocate A)
-
-    Note over Stack: Back to initial state
-```
 
 ### Benefits
 
