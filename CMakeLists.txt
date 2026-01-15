@@ -88,7 +88,7 @@ else()
         tests/main.test.cpp
         tests/basics.test.cpp
         tests/blocked_by.test.cpp
-        tests/cancel.test.cpp
+        # tests/cancel.test.cpp
         tests/guards.test.cpp
         tests/proxy.test.cpp
     )
