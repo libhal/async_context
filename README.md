@@ -5,6 +5,10 @@ resource-constrained environments. Built with stack-based allocation to avoid
 heap usage and designed to fit within a single cache line for optimal
 performance.
 
+> [!CAUTION]
+>
+> 🚧 This project is still under construction! 🚧
+
 ## Features
 
 - **Stack-based coroutine allocation** - No heap allocations; coroutine frames are allocated from a user-provided stack buffer
@@ -22,7 +26,8 @@ performance.
 ## Requirements
 
 - C++23 compiler with coroutine support
-- Tested with Clang 18+
+- Tested with Clang 20+
+- Usage of C++20 modules
 
 ## Stack-Based Allocation
 
@@ -30,13 +35,42 @@ Unlike typical coroutine implementations that allocate frames on the heap,
 `async_context` uses a stack-based allocation scheme. Each context owns a
 contiguous buffer of memory that grows upward as coroutines are called.
 
-### Memory Layout
-
-> [!NOTE]
->
-> Will add a diagram here later
-
 ### How Allocation Works
+
+```ascii
+┌─────────────────────────────┐ Address 0
+│  &context::m_stack_pointer  │
+├─────────────────────────────┤
+│     Coroutine Frame A       │
+│     (promise + locals)      │
+|           (96 B)            │
+├─────────────────────────────┤
+│  &context::m_stack_pointer  │
+├─────────────────────────────┤
+│     Coroutine Frame B       │
+|           (192 B)           │
+│     (promise + locals)      │
+│                             │
+│                             │
+│                             │
+├─────────────────────────────┤
+│    Stack pointer address    │
+├─────────────────────────────┤
+│     Coroutine Frame C       │
+|           (128 B)           │
+│     (promise + locals)      │
+│                             │
+├─────────────────────────────┤
+│        Unused Memory        │ <-- context::m_stack_pointer
+│                             │
+│                             │
+│                             │
+│                             │
+│                             │
+│                             │
+│                             │
+└─────────────────────────────┘ Address N (bytes of stack memory)
+```
 
 1. **Allocation**: When a coroutine is created, the promise's `operator new`
    requests memory from the context. The context:
@@ -48,13 +82,14 @@ contiguous buffer of memory that grows upward as coroutines are called.
    - Reads the stored `&m_stack_pointer` from just before the frame
    - Resets `m_stack_pointer` back to that position
 
-This creates a strict LIFO (stack) discipline—coroutines must complete in
-reverse order of their creation, which naturally matches how `co_await` chains
+This creates a strict LIFO stack where coroutines must complete in reverse
+order of their creation, which naturally matches how `co_await` chains
 work.
 
 ### Benefits
 
-- **No heap allocation**: Ideal for embedded systems without dynamic memory
+- **No heap allocation on frame creation**: Ideal for embedded systems without
+  dynamic memory
 - **Deterministic**: Memory usage is bounded by the stack buffer size
 - **Cache-friendly**: Coroutine frames are contiguous in memory
 - **Fast**: Simple pointer arithmetic instead of malloc/free
