@@ -17,6 +17,8 @@ cmake_minimum_required(VERSION 3.28)
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
+set(BUILD_UNIT_TESTS ON)
+set(BUILD_BENCHMARKS ON)
 
 project(async_context LANGUAGES CXX)
 
@@ -71,7 +73,7 @@ add_custom_target(copy_compile_commands ALL
 # Unit testing
 # ==============================================================================
 
-if(TRUE)
+if(BUILD_UNIT_TESTS)
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping unit test execution")
 else()
@@ -111,13 +113,13 @@ else()
 
     add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
 endif()
-endif()
+endif() # BUILD_UNIT_TESTS
 
 # ==============================================================================
 # Benchmarking
 # ==============================================================================
 
-if(TRUE)
+if(BUILD_BENCHMARKS)
 if(CMAKE_CROSSCOMPILING)
     message(STATUS "Cross compiling, skipping benchmarks")
 else()
@@ -143,4 +145,4 @@ else()
 
     add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
 endif()
-endif()
+endif() # BUILD_BENCHMARKS
