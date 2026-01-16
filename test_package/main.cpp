@@ -28,7 +28,7 @@ import async_context;
 
 struct round_robin_scheduler
 {
-  bool run_until_all_done(int p_iterations = 100)
+  bool run_all_until_done(int p_iterations = 100)
   {
     for (int i = 0; i < p_iterations; i++) {
       bool all_done = true;
@@ -95,9 +95,9 @@ private:
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
   using namespace std::chrono_literals;
-  std::println("  ['{}': Sensor] Starting read...", p_name);
+  std::println("['{}': Sensor] Starting read...", p_name);
   co_await ctx.block_by_io();  // Simulate I/O operation
-  std::println("  ['{}': Sensor] Read complete: 42", p_name);
+  std::println("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
 
@@ -107,10 +107,10 @@ async::future<int> process_data(async::context& ctx,
                                 int value)
 {
   using namespace std::chrono_literals;
-  std::println("  ['{}': Process] Processing {}...", p_name, value);
+  std::println("['{}': Process] Processing {}...", p_name, value);
   co_await 10ms;  // Simulate processing time
   int result = value * 2;
-  std::println("  ['{}': Process] Result: {}", p_name, result);
+  std::println("['{}': Process] Result: {}", p_name, result);
   co_return result;
 }
 
@@ -119,9 +119,9 @@ async::future<void> write_actuator(async::context& ctx,
                                    std::string_view p_name,
                                    int value)
 {
-  std::println("  ['{}': Actuator] Writing {}...", p_name, value);
+  std::println("['{}': Actuator] Writing {}...", p_name, value);
   co_await ctx.block_by_io();
-  std::println("  ['{}': Actuator] Write complete!", p_name);
+  std::println("['{}': Actuator] Write complete!", p_name);
 }
 
 // Coordinates the full pipeline
@@ -146,10 +146,10 @@ int main()
   test_context ctx2(scheduler);
 
   // Run two independent pipelines concurrently
-  auto pipeline1 = sensor_pipeline(ctx1, "System 1");
-  auto pipeline2 = sensor_pipeline(ctx2, "System 2");
+  auto pipeline1 = sensor_pipeline(ctx1, "🌟 System 1");
+  auto pipeline2 = sensor_pipeline(ctx2, "🔥 System 2");
 
-  scheduler->run_until_all_done();
+  scheduler->run_all_until_done();
 
   assert(pipeline1.done());
   assert(pipeline2.done());

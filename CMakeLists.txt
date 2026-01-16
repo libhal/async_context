@@ -90,7 +90,7 @@ else()
         tests/main.test.cpp
         tests/basics.test.cpp
         tests/blocked_by.test.cpp
-        # tests/cancel.test.cpp
+        tests/cancel.test.cpp
         tests/guards.test.cpp
         tests/proxy.test.cpp
     )
@@ -108,6 +108,7 @@ else()
         -fno-rtti)
 
     target_link_options(async_unit_test PRIVATE
+        -g
         -fsanitize=address)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
