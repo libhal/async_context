@@ -16,9 +16,12 @@ cmake_minimum_required(VERSION 3.28)
 
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# The rest are self explanatory...
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 set(BUILD_UNIT_TESTS ON)
+set(RUN_UNIT_TESTS ON)
 set(BUILD_BENCHMARKS ON)
+set(RUN_BENCHMARKS OFF)
 
 project(async_context LANGUAGES CXX)
 
@@ -73,10 +76,7 @@ add_custom_target(copy_compile_commands ALL
 # Unit testing
 # ==============================================================================
 
-if(BUILD_UNIT_TESTS)
-if(CMAKE_CROSSCOMPILING)
-    message(STATUS "Cross compiling, skipping unit test execution")
-else()
+if(NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS)
     find_package(ut REQUIRED)
     message(STATUS "Building unit tests!")
     add_executable(async_unit_test)
@@ -112,18 +112,19 @@ else()
         -fsanitize=address)
     target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
 
-    add_custom_target(run_tests ALL DEPENDS async_unit_test COMMAND async_unit_test)
-endif()
-endif() # BUILD_UNIT_TESTS
+    if(RUN_UNIT_TESTS)
+        add_custom_target(run_tests ALL DEPENDS async_unit_test
+                          COMMAND async_unit_test)
+    endif() # RUN_UNIT_TESTS
+else()
+    message(STATUS "Cross compiling, skipping unit test execution")
+endif() # NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS
 
 # ==============================================================================
 # Benchmarking
 # ==============================================================================
 
-if(BUILD_BENCHMARKS)
-if(CMAKE_CROSSCOMPILING)
-    message(STATUS "Cross compiling, skipping benchmarks")
-else()
+if(NOT CMAKE_CROSSCOMPILING AND BUILD_BENCHMARKS)
     find_package(benchmark REQUIRED)
     message(STATUS "Building benchmarks tests!")
     add_executable(async_benchmark)
@@ -144,6 +145,10 @@ else()
                             async_context
                             benchmark::benchmark)
 
-    add_custom_target(run_benchmark ALL DEPENDS async_benchmark COMMAND async_benchmark)
-endif()
-endif() # BUILD_BENCHMARKS
+    if(RUN_BENCHMARKS)
+        add_custom_target(run_benchmark ALL DEPENDS async_benchmark
+                        COMMAND async_benchmark)
+    endif() # RUN_BENCHMARKS
+else()
+    message(STATUS "Cross compiling, skipping benchmarks")
+endif() # if(NOT CMAKE_CROSSCOMPILING AND BUILD_BENCHMARKS)

@@ -182,6 +182,11 @@ class promise_base;
 export class context
 {
 public:
+  // We store a single reference to a noop_coroutine() as multiple calls to this
+  // function are not guaranteed to compare equal. In order to have a
+  // noop_coroutine that plays nicely with our cancellation code, we need a
+  // single handle for all to reference as a "done" state.
+  inline static auto const noop_sentinel = std::noop_coroutine();
   static auto constexpr default_timeout = sleep_duration(0);
 
   context() = default;
@@ -258,7 +263,7 @@ public:
 
   constexpr bool done()
   {
-    return m_active_handle == std::noop_coroutine();
+    return m_active_handle == noop_sentinel;
   }
 
   void cancel();
@@ -380,12 +385,12 @@ private:
                            block_info p_block_info) noexcept = 0;
   friend class proxy_context;
 
-  /* vtable ptr */                                                  // word 1
-  std::coroutine_handle<> m_active_handle = std::noop_coroutine();  // word 2
-  std::span<uptr> m_stack{};                                        // word 3-4
-  uptr* m_stack_pointer = nullptr;                                  // word 5
-  blocked_by m_state = blocked_by::nothing;                         // word 6
-  proxy_info m_proxy{};                                             // word 7-8
+  /* vtable ptr */                                          // word 1
+  std::coroutine_handle<> m_active_handle = noop_sentinel;  // word 2
+  std::span<uptr> m_stack{};                                // word 3-4
+  uptr* m_stack_pointer = nullptr;                          // word 5
+  blocked_by m_state = blocked_by::nothing;                 // word 6
+  proxy_info m_proxy{};                                     // word 7-8
 };
 
 // Context should stay close to a standard cache-line of 64 bytes (8 words) for
@@ -422,7 +427,7 @@ public:
 private:
   proxy_context(context& p_parent)
   {
-    m_active_handle = std::noop_coroutine();
+    m_active_handle = context::noop_sentinel;
     m_proxy = {};
 
     // We need to manually set:
@@ -487,7 +492,7 @@ public:
    */
   void sync_wait(std::invocable<sleep_duration> auto&& p_delay)
   {
-    while (active_handle() != std::noop_coroutine()) {
+    while (active_handle() != context::noop_sentinel) {
       active_handle().resume();
 
       if (state() == blocked_by::time && m_pending_delay > sleep_duration(0)) {
@@ -753,7 +758,7 @@ protected:
   // Consider m_continuation as the return address of the coroutine. The
   // coroutine handle for the coroutine that called and awaited the future that
   // generated this promise is stored here.
-  std::coroutine_handle<> m_continuation = std::noop_coroutine();
+  std::coroutine_handle<> m_continuation = context::noop_sentinel;
   class context* m_context = nullptr;
   cancellation_fn* m_cancel = nullptr;
 };
