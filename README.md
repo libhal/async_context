@@ -30,9 +30,9 @@ using namespace std::chrono_literals;
 // Simulates reading sensor data with I/O delay
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
-  std::println("  ['{}': Sensor] Starting read...", p_name);
+  std::println("['{}': Sensor] Starting read...", p_name);
   co_await ctx.block_by_io();  // Simulate I/O operation
-  std::println("  ['{}': Sensor] Read complete: 42", p_name);
+  std::println("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
 
@@ -41,10 +41,10 @@ async::future<int> process_data(async::context& ctx,
                                 std::string_view p_name,
                                 int value)
 {
-  std::println("  ['{}': Process] Processing {}...", p_name, value);
+  std::println("['{}': Process] Processing {}...", p_name, value);
   co_await 10ms;  // Simulate processing time
   int result = value * 2;
-  std::println("  ['{}': Process] Result: {}", p_name, result);
+  std::println("['{}': Process] Result: {}", p_name, result);
   co_return result;
 }
 
@@ -53,9 +53,9 @@ async::future<void> write_actuator(async::context& ctx,
                                    std::string_view p_name,
                                    int value)
 {
-  std::println("  ['{}': Actuator] Writing {}...", p_name, value);
+  std::println("['{}': Actuator] Writing {}...", p_name, value);
   co_await ctx.block_by_io();
-  std::println("  ['{}': Actuator] Write complete!", p_name);
+  std::println("['{}': Actuator] Write complete!", p_name);
 }
 
 // Coordinates the full pipeline
@@ -78,8 +78,8 @@ int main()
   basic_context<8192> ctx2(scheduler);
 
   // Run two independent pipelines concurrently
-  auto pipeline1 = sensor_pipeline(ctx1, "System 1");
-  auto pipeline2 = sensor_pipeline(ctx2, "System 2");
+  auto pipeline1 = sensor_pipeline(ctx1, "🌟 System 1");
+  auto pipeline2 = sensor_pipeline(ctx2, "🔥 System 2");
 
   // Round robin between each context
   while (true) {
@@ -107,6 +107,30 @@ int main()
   std::println("Both pipelines completed successfully!");
   return 0;
 }
+```
+
+Output:
+
+```
+Pipeline '🌟 System 1' starting...
+['🌟 System 1': Sensor] Starting read...
+Pipeline '🔥 System 2' starting...
+['🔥 System 2': Sensor] Starting read...
+['🌟 System 1': Sensor] Read complete: 42
+['🌟 System 1': Process] Processing 42...
+['🔥 System 2': Sensor] Read complete: 42
+['🔥 System 2': Process] Processing 42...
+['🌟 System 1': Process] Result: 84
+['🌟 System 1': Actuator] Writing 84...
+['🔥 System 2': Process] Result: 84
+['🔥 System 2': Actuator] Writing 84...
+['🌟 System 1': Actuator] Write complete!
+Pipeline '🌟 System 1' complete!
+
+['🔥 System 2': Actuator] Write complete!
+Pipeline '🔥 System 2' complete!
+
+Both pipelines completed successfully!
 ```
 
 ## Features
