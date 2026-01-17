@@ -321,6 +321,11 @@ public:
     my_context() {
         initialize_stack_memory(m_stack);
     }
+    ~my_context() {
+        // ‼️ The most derived context must call cancel in its destructor
+        cancel();
+        // If memory was allocated, deallocate it here...
+    }
 
 private:
     void do_schedule(async::blocked_by p_state,
@@ -329,6 +334,21 @@ private:
     }
 };
 ```
+
+#### Initialization
+
+In order to create a usable custom context, the stack memory must be
+initialized with a call to `initialize_stack_memory(span)` with a span to the
+memory for the stack. There is no requirements of where this memory comes from
+except that it be a valid source. Such sources can be array thats member of
+this object, dynamically allocated memory that the context has sole ownership
+of, or it can point to statically allocated memory that it has sole control and
+ownership over.
+
+#### Destruction
+
+The custom context must call `cancel()` before deallocating the stack memory.
+Once cancel completes, the stack memory may be deallocated.
 
 ### Using basic_context with sync_wait
 
@@ -339,6 +359,10 @@ public:
 
     simple_context() {
         initialize_stack_memory(m_stack);
+    }
+
+    ~simple_context() {
+        cancel();
     }
 };
 
