@@ -14,38 +14,30 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     // Setup
     test_context ctx;
 
-    std::pair<int, int> count{ 0, 0 };
+    counter_pair count{};
     int ends_reached = 0;
 
-    auto get_counter = [&count](std::string_view p_label = "") -> auto {
-      return raii_counter(
-        std::make_pair<int*, int*>(&count.first, &count.second), p_label);
-    };
-
-    auto a = [get_counter,
-              &ends_reached](async::context& p_ctx) -> async::future<void> {
+    auto a = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel] entering a");
-      raii_counter counter = get_counter("a");
+      raii_counter counter(count, "a");
       co_await std::suspend_always{};
       std::println("[future cancel] a exited");
       ends_reached++;
       co_return;
     };
 
-    auto b = [a, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+    auto b = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel] entering b");
-      raii_counter counter = get_counter("b");
+      raii_counter counter(count, "b");
       co_await a(p_ctx);
       std::println("[future cancel] b exited");
       ends_reached++;
       co_return;
     };
 
-    auto c = [b, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+    auto c = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel] entering c");
-      raii_counter counter = get_counter("c");
+      raii_counter counter(count, "c");
       co_await b(p_ctx);
       std::println("[future cancel] c exited");
       ends_reached++;
@@ -53,26 +45,22 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     };
 
     {
-      expect(count == std::make_pair<int, int>(0, 0))
-        << "count is {" << count.first << ", " << count.second << "}\n";
+      expect(that % count == counter_pair{ 0, 0 });
       expect(that % ends_reached == 0);
 
       auto future = c(ctx);
 
-      expect(count == std::make_pair<int, int>(0, 0))
-        << "count is {" << count.first << ", " << count.second << "}\n";
+      expect(that % count == counter_pair{ 0, 0 });
       expect(that % ends_reached == 0);
 
       future.resume();
 
-      expect(count == std::make_pair<int, int>(3, 0))
-        << "count is {" << count.first << ", " << count.second << "}\n";
+      expect(that % count == counter_pair{ 3, 0 });
       expect(that % ends_reached == 0);
       expect(that % 0 < ctx.memory_used());
     }  // destroy future
 
-    expect(count == std::make_pair<int, int>(3, 3))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 3, 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };
@@ -81,18 +69,12 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     // Setup
     test_context ctx;
 
-    std::pair<int, int> count{ 0, 0 };
+    counter_pair count{};
     int ends_reached = 0;
 
-    auto get_counter = [&count](std::string_view p_label = "") -> auto {
-      return raii_counter(
-        std::make_pair<int*, int*>(&count.first, &count.second), p_label);
-    };
-
-    auto a = [get_counter,
-              &ends_reached](async::context& p_ctx) -> async::future<void> {
+    auto a = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel direct] entering a");
-      raii_counter counter = get_counter("future direct A");
+      raii_counter counter(count, "future direct A");
       std::println("[context cancel] suspend a");
       co_await std::suspend_always{};
       std::println("[future cancel direct] a exited");
@@ -100,10 +82,9 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    auto b = [a, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+    auto b = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel direct] entering b");
-      raii_counter counter = get_counter("future direct B");
+      raii_counter counter(count, "future direct B");
       co_await a(p_ctx);
       std::println("[context cancel] suspend b");  // should never show up
       co_await std::suspend_always{};
@@ -112,10 +93,9 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    auto c = [b, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+    auto c = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[future cancel direct] entering c");
-      raii_counter counter = get_counter("future direct C");
+      raii_counter counter(count, "future direct C");
       co_await b(p_ctx);
       std::println("[context cancel] suspend c");  // should never show up
       co_await std::suspend_always{};
@@ -124,27 +104,23 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    expect(count == std::make_pair<int, int>(0, 0))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(count == std::make_pair<int, int>(0, 0))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     future.resume();
 
-    expect(count == std::make_pair<int, int>(3, 0))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 3, 0 });
     expect(that % ends_reached == 0);
     expect(that % 0 < ctx.memory_used());
 
     future.cancel();
 
-    expect(count == std::make_pair<int, int>(3, 3))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 3, 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };
@@ -153,28 +129,22 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     // Setup
     test_context ctx;
 
-    std::pair<int, int> count{ 0, 0 };
+    counter_pair count{};
     int ends_reached = 0;
 
-    auto get_counter = [&count](std::string_view p_label) -> auto {
-      return raii_counter(
-        std::make_pair<int*, int*>(&count.first, &count.second), p_label);
-    };
-
-    auto a = [get_counter,
-              &ends_reached](async::context& p_ctx) -> async::future<void> {
+    auto a = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[context cancel] entering a");
-      raii_counter counter = get_counter("context A");
+      raii_counter counter(count, "context A");
       std::println("[context cancel] suspend a");
       co_await std::suspend_always{};
       std::println("[context cancel] a exited");
       ends_reached++;
       co_return;
     };
-    auto b = [a, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+
+    auto b = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[context cancel] entering b");
-      raii_counter counter = get_counter("context B");
+      raii_counter counter(count, "context B");
       co_await a(p_ctx);
       std::println("[context cancel] suspend b");  // should never show up
       co_await std::suspend_always{};
@@ -182,10 +152,10 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       ends_reached++;
       co_return;
     };
-    auto c = [b, get_counter, &ends_reached](
-               async::context& p_ctx) -> async::future<void> {
+
+    auto c = [&](async::context& p_ctx) -> async::future<void> {
       std::println("[context cancel] entering c");
-      raii_counter counter = get_counter("context C");
+      raii_counter counter(count, "context C");
       co_await b(p_ctx);
       std::println("[context cancel] c suspended");  // should never show up
       co_await std::suspend_always{};
@@ -194,17 +164,17 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     future.resume();
 
-    expect(count == std::make_pair<int, int>(3, 0));
+    expect(that % count == counter_pair{ 3, 0 });
     expect(that % ends_reached == 0);
     expect(that % 0 < ctx.memory_used());
     expect(that % false == future.has_value());
@@ -212,7 +182,7 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
 
     ctx.cancel();
 
-    expect(count == std::make_pair<int, int>(3, 3));
+    expect(that % count == counter_pair{ 3, 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
     expect(that % false == future.has_value());
@@ -222,20 +192,15 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     // Setup
     test_context ctx;
 
-    std::pair<int, int> count{ 0, 0 };
+    counter_pair count{};
     int ends_reached = 0;
-
-    auto get_counter = [&count]() -> auto {
-      return raii_counter(
-        std::make_pair<int*, int*>(&count.first, &count.second));
-    };
 
     bool should_throw = true;
     int step = 0;
     auto a = [&](async::context& p_ctx) -> async::future<void> {
       step = 3;
       std::println("[exception] entering a");
-      raii_counter counter = get_counter();
+      raii_counter counter(count, "exception A");
       co_await std::suspend_always{};
       step = 4;
       if (should_throw) {
@@ -246,31 +211,33 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       ends_reached++;
       co_return;
     };
+
     auto b = [&](async::context& p_ctx) -> async::future<void> {
       step = 2;
       std::println("[exception] entering b");
-      raii_counter counter = get_counter();
+      raii_counter counter(count, "exception B");
       co_await a(p_ctx);
       std::println("[exception] b exited");
       ends_reached++;
       co_return;
     };
+
     auto c = [&](async::context& p_ctx) -> async::future<void> {
       step = 1;
       std::println("[exception] entering c");
-      raii_counter counter = get_counter();
+      raii_counter counter(count, "exception C");
       co_await b(p_ctx);
       std::println("[exception] c exited");
       ends_reached++;
       co_return;
     };
 
-    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(count == std::make_pair<int, int>(0, 0));
+    expect(that % count == counter_pair{ 0, 0 });
     expect(that % ends_reached == 0);
 
     std::println("Resume until future reaches suspension @ coroutine A");
@@ -280,8 +247,7 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       << "runtime_error exception was not thrown!";
     expect(that % future.done());
     expect(that % not future.has_value());
-    expect(count == std::make_pair<int, int>(3, 3))
-      << "count is {" << count.first << ", " << count.second << "}\n";
+    expect(that % count == counter_pair{ 3, 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };
