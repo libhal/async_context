@@ -526,45 +526,47 @@ private:
   sleep_duration m_pending_delay{ 0 };
 };
 
-export class context_token
+export class exclusive_access
 {
 public:
-  constexpr context_token() = default;
-  constexpr context_token(context& p_capture) noexcept
-    : m_context_address(std::bit_cast<uptr>(&p_capture))
+  constexpr exclusive_access() = default;
+  constexpr exclusive_access(context& p_capture) noexcept
+    : m_context_address(&p_capture)
   {
   }
-  constexpr context_token& operator=(context& p_capture) noexcept
+
+  constexpr exclusive_access& operator=(context& p_capture) noexcept
   {
-    m_context_address = std::bit_cast<uptr>(&p_capture);
+    m_context_address = &p_capture;
     return *this;
   }
-  constexpr context_token& operator=(nullptr_t) noexcept
+  constexpr exclusive_access& operator=(nullptr_t) noexcept
   {
-    m_context_address = 0U;
+    m_context_address = nullptr;
     return *this;
   }
 
-  constexpr context_token(context_token const& p_capture) noexcept = default;
-  constexpr context_token& operator=(context_token const& p_capture) noexcept =
+  constexpr exclusive_access(exclusive_access const& p_capture) noexcept =
     default;
-  constexpr context_token(context_token&& p_capture) noexcept = default;
-  constexpr context_token& operator=(context_token& p_capture) noexcept =
+  constexpr exclusive_access& operator=(
+    exclusive_access const& p_capture) noexcept = default;
+  constexpr exclusive_access(exclusive_access&& p_capture) noexcept = default;
+  constexpr exclusive_access& operator=(exclusive_access& p_capture) noexcept =
     default;
 
   constexpr bool operator==(context& p_context) noexcept
   {
-    return m_context_address == std::bit_cast<uptr>(&p_context);
+    return m_context_address == &p_context;
   }
 
   [[nodiscard]] constexpr bool in_use() const noexcept
   {
-    return m_context_address != 0U;
+    return m_context_address != nullptr;
   }
 
   [[nodiscard]] auto address() const noexcept
   {
-    return m_context_address != 0U;
+    return m_context_address != nullptr;
   }
 
   [[nodiscard]] constexpr operator bool() const noexcept
@@ -576,15 +578,13 @@ public:
   // unblocks and clear itself.
   constexpr void lease(context& p_capture) noexcept
   {
-    m_context_address = std::bit_cast<uptr>(&p_capture);
+    m_context_address = &p_capture;
   }
 
   constexpr std::suspend_always set_as_block_by_sync(context& p_capture)
   {
     if (in_use()) {
-      auto* address = std::bit_cast<void*>(m_context_address);
-      auto* inner_context = static_cast<context*>(address);
-      p_capture.block_by_sync(inner_context);
+      p_capture.block_by_sync(m_context_address);
     }
     return {};
   }
@@ -592,15 +592,13 @@ public:
   constexpr void unblock_and_clear() noexcept
   {
     if (in_use()) {
-      auto* address = std::bit_cast<void*>(m_context_address);
-      auto* inner_context = static_cast<context*>(address);
-      inner_context->unblock();
-      m_context_address = 0U;
+      m_context_address->unblock();
+      m_context_address = nullptr;
     }
   }
 
 private:
-  uptr m_context_address = 0U;
+  context* m_context_address = nullptr;
 };
 
 export struct io
@@ -614,11 +612,11 @@ export struct io
 
 export struct sync
 {
-  sync(context_token p_context)
+  sync(exclusive_access p_context)
     : m_context(p_context)
   {
   }
-  context_token m_context;
+  exclusive_access m_context;
 };
 
 // =============================================================================
