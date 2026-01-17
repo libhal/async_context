@@ -115,22 +115,36 @@ export {
     }
   };
 
+  struct counter_pair
+  {
+    int constructed = 0;
+    int destructed = 0;
+
+    bool operator==(counter_pair const&) const = default;
+
+    friend std::ostream& operator<<(std::ostream& out, counter_pair const& c)
+    {
+      return out << "{ constructed: " << c.constructed
+                 << ", destructed: " << c.destructed << " }";
+    }
+  };
+
   struct raii_counter
   {
-    raii_counter(std::pair<int*, int*> p_counts, std::string_view p_label = "X")
-      : counts(p_counts)
+    raii_counter(counter_pair& p_counts, std::string_view p_label = "X")
+      : m_counts(&p_counts)
       , m_label(p_label)
     {
       std::println("🟢 CTOR: {}", m_label);
-      (*counts.first)++;
+      m_counts->constructed++;
     }
 
     ~raii_counter()  // NOLINT(bugprone-exception-escape)
     {
       std::println("🔵 DTOR: {}", m_label);
-      (*counts.second)++;
+      m_counts->destructed++;
     }
-    std::pair<int*, int*> counts;
+    counter_pair* m_counts;
     std::string_view m_label;
   };
 }
