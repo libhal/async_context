@@ -91,7 +91,7 @@ if(NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS)
         tests/basics.test.cpp
         tests/blocked_by.test.cpp
         tests/cancel.test.cpp
-        tests/guards.test.cpp
+        tests/exclusive_access.test.cpp
         tests/proxy.test.cpp
     )
 

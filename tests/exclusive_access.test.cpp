@@ -14,7 +14,7 @@ boost::ut::suite<"guards_tests"> guards_tests = []() {
     test_context ctx1;
     test_context ctx2;
 
-    async::context_token io_in_use;
+    async::exclusive_access io_in_use;
 
     auto single_resource =
       [&](async::context& p_context) -> async::future<void> {
