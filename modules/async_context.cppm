@@ -261,6 +261,8 @@ public:
     return m_active_handle == std::noop_coroutine();
   }
 
+  void cancel();
+
   void resume()
   {
     // We cannot resume the a coroutine blocked by time.
@@ -285,7 +287,6 @@ public:
     return capacity() - memory_used();
   }
 
-  // TODO(#40): Perform cancellation on context destruction
   virtual ~context() = default;
 
 private:
@@ -409,8 +410,11 @@ public:
 
   ~proxy_context() override
   {
-    // Unshrink parent stack, by setting its range to be the start of its
-    // stack and the end to be the end of this stack.
+    // Cancel any operations still on this context
+    cancel();
+
+    // Restore parent stack, by setting its range to be the start of its
+    // stack and the end of our stack.
     m_proxy.parent->m_stack = { m_proxy.parent->m_stack.begin(),
                                 m_stack.end() };
   }
@@ -733,12 +737,25 @@ public:
     return m_continuation;
   }
 
+  void cancel()
+  {
+    // Set future state to cancelled
+    m_cancel(this);
+    // Pop self off context stack
+    pop_active_coroutine();
+    // Destroy promise objects & deallocate memory
+    std::coroutine_handle<promise_base>::from_promise(*this).destroy();
+  }
+
 protected:
+  using cancellation_fn = void(void*);
+
   // Consider m_continuation as the return address of the coroutine. The
   // coroutine handle for the coroutine that called and awaited the future that
   // generated this promise is stored here.
   std::coroutine_handle<> m_continuation = std::noop_coroutine();
-  class context* m_context;  // left uninitialized, compiler should warn me
+  class context* m_context = nullptr;
+  cancellation_fn* m_cancel = nullptr;
 };
 
 export template<typename T>
@@ -856,6 +873,12 @@ public:
     *promise_return_base<T>::m_future_state = std::current_exception();
   }
 
+  static void cancel_promise(void* p_self)
+  {
+    auto* self = static_cast<promise<T>*>(p_self);
+    *self->m_future_state = cancelled_state{};
+  }
+
   constexpr future<T> get_return_object() noexcept;
 };
 
@@ -886,12 +909,26 @@ public:
    * @brief Reports if this async object has finished its operation and now
    * contains a value.
    *
-   * @return true - operation is either finished
+   * @return true - this operation is finished and either contains the value of
+   * type T, an exception_ptr, or this future is in a cancelled state.
    * @return false - operation has yet to completed and does have a value.
    */
   [[nodiscard]] constexpr bool done() const
   {
     return not std::holds_alternative<handle_type>(m_state);
+  }
+
+  void cancel()
+  {
+    if (done()) {
+      return;
+    }
+
+    auto handle = std::get<handle_type>(m_state);
+    full_handle_type::from_address(handle.address())
+      .promise()
+      .get_context()
+      .cancel();
   }
 
   /**
@@ -1021,7 +1058,11 @@ public:
   constexpr ~future()
   {
     if (std::holds_alternative<handle_type>(m_state)) {
-      std::get<handle_type>(m_state).destroy();
+      auto handle = std::get<handle_type>(m_state);
+      full_handle_type::from_address(handle.address())
+        .promise()
+        .get_context()
+        .cancel();
     }
   }
 
@@ -1038,6 +1079,7 @@ private:
   {
     auto& promise = p_handle.promise();
     promise.m_future_state = &m_state;
+    promise.m_cancel = &promise_type::cancel_promise;
   }
 
   future_state<T> m_state{};
@@ -1057,5 +1099,14 @@ constexpr future<T> promise<T>::get_return_object() noexcept
   auto handle = future_handle::from_promise(*this);
   m_context->active_handle(handle);
   return future<T>{ handle };
+}
+
+void context::cancel()
+{
+  while (not done()) {
+    std::coroutine_handle<promise_base>::from_address(m_active_handle.address())
+      .promise()
+      .cancel();
+  }
 }
 }  // namespace async::inline v0

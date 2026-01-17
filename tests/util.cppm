@@ -1,11 +1,7 @@
 module;
 
 #include <chrono>
-#include <coroutine>
-#include <memory_resource>
 #include <ostream>
-#include <source_location>
-#include <stdexcept>
 #include <variant>
 
 #include <boost/ut.hpp>
@@ -59,6 +55,11 @@ export {
       : info(std::make_shared<thread_info>())
     {
       this->initialize_stack_memory(m_stack);
+    }
+
+    ~test_context() override
+    {
+      cancel();
     }
 
   private:
@@ -116,16 +117,20 @@ export {
 
   struct raii_counter
   {
-    raii_counter(std::pair<int*, int*> p_counts)
+    raii_counter(std::pair<int*, int*> p_counts, std::string_view p_label = "X")
       : counts(p_counts)
+      , m_label(p_label)
     {
+      std::println("🟢 CTOR: {}", m_label);
       (*counts.first)++;
     }
 
     ~raii_counter()  // NOLINT(bugprone-exception-escape)
     {
+      std::println("🔵 DTOR: {}", m_label);
       (*counts.second)++;
     }
     std::pair<int*, int*> counts;
+    std::string_view m_label;
   };
 }

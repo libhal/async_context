@@ -143,10 +143,6 @@ Both pipelines completed successfully!
 - **Exception propagation** - Proper exception handling through the coroutine chain
 - **Cancellation support** - Clean cancellation with RAII-based resource cleanup
 
-> [!WARNING]
->
-> Cancellation support is not implemented yet.
-
 ## Requirements
 
 - C++23 compiler with coroutine support
@@ -361,22 +357,39 @@ exception will be thrown from a call to `.resume()`.
 
 ```cpp
 async::future<void> may_throw(async::context& p_ctx) {
-    throw std::runtime_error("error");
-    co_return;
+  throw std::runtime_error("error");
+  co_return;
 }
 
 async::future<void> just_calls(async::context& p_ctx) {
-    co_await may_throw(p_ctx);
-    co_return;
+  co_await may_throw(p_ctx);
+  co_return;
 }
 
 simple_context ctx;
 auto future = may_throw(ctx);
+
 try {
-    future.resume();
+  future.resume();
 } catch (const std::runtime_error& e) {
-    // Handle exception
+  // Handle exception
 }
+```
+
+### Avoid operation stacking
+
+Operation stacking is when you load an additional operation into a coroutine's
+stack memory before finishing the previous operation. This results in a memory
+leak where the previous coroutines frame is no longer accessible and cannot be
+deallocated, permanently reducing the memory of the context and preserving the
+lifetime of the objects held within. It is UB to allow the context to be
+destroyed at this point.
+
+```cpp
+my_context ctx;
+auto future1 = async_op1(ctx); // ✅ Okay, may create some objects on its stack
+auto future2 = async_op2(ctx); // ❌ Memory leak! Don't do this
+// UB to allow ctx to be destroyed at this point 😱
 ```
 
 ### Proxy Context for Timeouts
