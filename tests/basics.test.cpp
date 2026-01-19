@@ -8,7 +8,28 @@ import test_utils;
 boost::ut::suite<"basics"> basics = []() {
   using namespace boost::ut;
 
-  "sync return"_test = []() {
+  "sync return type void"_test = []() {
+    // Setup
+    test_context ctx;
+
+    unsigned step = 0;
+    auto sync_coroutine = [&step](async::context&) -> async::future<void> {
+      step = 1;
+      return {};
+    };
+
+    // Exercise
+    auto future = sync_coroutine(ctx);
+
+    // Verify
+    expect(that % 0 == ctx.memory_used());
+    expect(that % not ctx.info->scheduled_called_once);
+    expect(that % future.done());
+    expect(that % future.has_value());
+    expect(that % 1 == step);
+  };
+
+  "sync return type int"_test = []() {
     // Setup
     test_context ctx;
 
@@ -16,6 +37,31 @@ boost::ut::suite<"basics"> basics = []() {
 
     unsigned step = 0;
     auto sync_coroutine = [&step](async::context&) -> async::future<int> {
+      step = 1;
+      return expected_return_value;
+    };
+
+    // Exercise
+    auto future = sync_coroutine(ctx);
+
+    // Verify
+    expect(that % 0 == ctx.memory_used());
+    expect(that % not ctx.info->scheduled_called_once);
+    expect(that % future.done());
+    expect(that % future.has_value());
+    expect(that % expected_return_value == future.value());
+    expect(that % 1 == step);
+  };
+
+  "sync return type std::string"_test = []() {
+    // Setup
+    test_context ctx;
+
+    static constexpr auto expected_return_value = "Hello, World\n";
+
+    unsigned step = 0;
+    auto sync_coroutine =
+      [&step](async::context&) -> async::future<std::string> {
       step = 1;
       return expected_return_value;
     };

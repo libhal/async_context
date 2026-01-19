@@ -893,6 +893,71 @@ public:
   using handle_type = std::coroutine_handle<>;
   using full_handle_type = std::coroutine_handle<promise_type>;
 
+  future(future const& p_other) = delete;
+  future& operator=(future const& p_other) = delete;
+
+  /**
+   * @brief Default initialization for a void future
+   *
+   * This future will considered to be done on creation.
+   */
+  future()
+    requires(std::is_void_v<T>)
+    : m_state(std::monostate{})
+  {
+  }
+
+  /**
+   * @brief Construct a future with a value
+   *
+   * This future will considered to be done and will contain just the value
+   * passed into this.
+   *
+   * @tparam U - type that can construct a type T (which includes T itself)
+   */
+  template<typename U>
+  constexpr future(U&& p_value) noexcept
+    requires std::is_constructible_v<T, U&&>
+  {
+    m_state.template emplace<T>(std::forward<U>(p_value));
+  };
+
+  constexpr future(future&& p_other) noexcept
+    : m_state(std::exchange(p_other.m_state, std::monostate{}))
+  {
+    if (std::holds_alternative<handle_type>(m_state)) {
+      auto handle = std::get<handle_type>(m_state);
+      full_handle_type::from_address(handle.address())
+        .promise()
+        .set_object_address(&m_state);
+    }
+  }
+
+  constexpr future& operator=(future&& p_other) noexcept
+  {
+    if (this != &p_other) {
+      m_state = std::exchange(p_other.m_state, std::monostate{});
+      if (std::holds_alternative<handle_type>(m_state)) {
+        auto handle = std::get<handle_type>(m_state);
+        full_handle_type::from_address(handle.address())
+          .promise()
+          .set_object_address(&m_state);
+      }
+    }
+    return *this;
+  }
+
+  constexpr ~future()
+  {
+    if (std::holds_alternative<handle_type>(m_state)) {
+      auto handle = std::get<handle_type>(m_state);
+      full_handle_type::from_address(handle.address())
+        .promise()
+        .get_context()
+        .cancel();
+    }
+  }
+
   constexpr void resume() const
   {
     if (std::holds_alternative<handle_type>(m_state)) {
@@ -1021,52 +1086,6 @@ public:
   [[nodiscard]] constexpr awaiter operator co_await() noexcept
   {
     return awaiter{ *this };
-  }
-
-  template<typename U>
-  constexpr future(U&& p_value) noexcept
-    requires std::is_constructible_v<T, U&&>
-  {
-    m_state.template emplace<T>(std::forward<U>(p_value));
-  };
-
-  future(future const& p_other) = delete;
-  future& operator=(future const& p_other) = delete;
-
-  constexpr future(future&& p_other) noexcept
-    : m_state(std::exchange(p_other.m_state, std::monostate{}))
-  {
-    if (std::holds_alternative<handle_type>(m_state)) {
-      auto handle = std::get<handle_type>(m_state);
-      full_handle_type::from_address(handle.address())
-        .promise()
-        .set_object_address(&m_state);
-    }
-  }
-
-  constexpr future& operator=(future&& p_other) noexcept
-  {
-    if (this != &p_other) {
-      m_state = std::exchange(p_other.m_state, std::monostate{});
-      if (std::holds_alternative<handle_type>(m_state)) {
-        auto handle = std::get<handle_type>(m_state);
-        full_handle_type::from_address(handle.address())
-          .promise()
-          .set_object_address(&m_state);
-      }
-    }
-    return *this;
-  }
-
-  constexpr ~future()
-  {
-    if (std::holds_alternative<handle_type>(m_state)) {
-      auto handle = std::get<handle_type>(m_state);
-      full_handle_type::from_address(handle.address())
-        .promise()
-        .get_context()
-        .cancel();
-    }
   }
 
 private:
