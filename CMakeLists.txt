@@ -89,6 +89,7 @@ if(NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS)
         PRIVATE
         tests/main.test.cpp
         tests/basics.test.cpp
+        tests/basic_context.test.cpp
         tests/blocked_by.test.cpp
         tests/cancel.test.cpp
         tests/exclusive_access.test.cpp

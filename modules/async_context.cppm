@@ -868,23 +868,22 @@ private:
  * @note basic_context is designed for simple use cases and testing, not
  * production embedded systems where strict memory management is required.
  */
-export class basic_context : public context
+class basic_context_impl : public context
 {
 public:
-  // TODO(63): Add stack memory template argument
   /**
-   * @brief Default constructor for basic_context
+   * @brief Default constructor for basic_context_impl
    *
    * Creates a new basic context with default initialization.
    */
-  basic_context() = default;
+  basic_context_impl() = default;
 
   /**
    * @brief Virtual destructor for proper cleanup
    *
    * Ensures that the basic context is properly cleaned up when deleted.
    */
-  ~basic_context() override = default;
+  ~basic_context_impl() override = default;
 
   /**
    * @brief Get the pending delay time for time-blocking operations
@@ -967,6 +966,63 @@ private:
    * time-blocking operations, allowing sync_wait to properly handle delays.
    */
   sleep_duration m_pending_delay{ 0 };
+};
+
+/**
+ * @brief A basic context implementation that supports synchronous waiting
+ *
+ * The basic_context class provides a concrete implementation of the context
+ * interface that supports synchronous waiting operations. It extends the base
+ * context with functionality to wait for coroutines to complete using a simple
+ * synchronous loop.
+ *
+ * This class provides stack memory via its `StackSizeInWords` template
+ * variable.
+ *
+ * @tparam StackSizeInWords - the number of words to allocate for the context's
+ * stack memory. Word size is 4 bytes for 32-bit systems and 8 bytes on 64-bit
+ * systems.
+ */
+export template<size_t StackSizeInWords>
+class basic_context
+{
+public:
+  static_assert(StackSizeInWords > 0UL,
+                "Stack memory must be greater than 0 words.");
+
+  basic_context()
+  {
+    m_context.initialize_stack_memory(m_stack);
+  }
+
+  ~basic_context()
+  {
+    m_context.cancel();
+  }
+
+  context& context()
+  {
+    return m_context;
+  }
+
+  operator class context&()
+  {
+    return m_context;
+  }
+
+  auto* operator->()
+  {
+    return &m_context;
+  }
+
+  auto& operator*()
+  {
+    return m_context;
+  }
+
+private:
+  basic_context_impl m_context;
+  std::array<uptr, StackSizeInWords> m_stack{};
 };
 
 /**
