@@ -41,7 +41,7 @@ export {
     bool scheduled_called_once = false;
   };
 
-  struct test_context : public async::basic_context
+  struct test_context : public async::context
   {
     std::shared_ptr<thread_info> info;
     std::array<async::uptr, 8192> m_stack{};
