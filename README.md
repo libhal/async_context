@@ -350,26 +350,39 @@ ownership over.
 The custom context must call `cancel()` before deallocating the stack memory.
 Once cancel completes, the stack memory may be deallocated.
 
-### Using basic_context with sync_wait
+### Using `async::basic_context` with `sync_wait()`
 
 ```cpp
-class simple_context : public async::basic_context {
-public:
-    std::array<async::uptr, 8192> m_stack{};
-
-    simple_context() {
-        initialize_stack_memory(m_stack);
-    }
-
-    ~simple_context() {
-        cancel();
-    }
-};
-
-simple_context ctx;
+async::basic_context<512> ctx;
 auto future = my_coroutine(ctx);
 ctx.sync_wait([](async::sleep_duration p_sleep_time) {
     std::this_thread::sleep_for(p_sleep_time);
+});
+```
+
+Replace `std::this_thread::sleep_for(p_sleep_time);` with whatever sleep
+function works best for your systems.
+
+For example, for FreeRTOS this could be:
+
+```C++
+// Helper function to convert std::chrono::nanoseconds to FreeRTOS ticks
+inline TickType_t ns_to_ticks(const std::chrono::nanoseconds& ns) {
+    // Convert nanoseconds to milliseconds (rounding to nearest ms)
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
+    return pdMS_TO_TICKS(ms);
+}
+ctx.sync_wait([](async::sleep_duration p_sleep_time) {
+    xTaskDelay(ns_to_ticks(p_sleep_time));
+});
+```
+
+Example using a made up hardware timer, to put system into low power mode:
+
+```C++
+ctx.sync_wait([timer_smart_ptr](async::sleep_duration p_sleep_time) {
+    timer_smart_ptr->schedule(p_sleep_time, []() { /* do something */ });
+    hal::cortex_m::wait_for_interrupt();
 });
 ```
 
