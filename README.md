@@ -15,6 +15,12 @@ performance.
 >
 > 🚧 This project is still under construction! 🚧
 
+
+> [!NOTE]
+>
+> This document is missing a section about how to create your own scheduler.
+> This is a missing feature we plan to add later.
+
 ```C++
 #include <cassert>
 
