@@ -16,6 +16,7 @@ cmake_minimum_required(VERSION 4.0)
 
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 project(test_package LANGUAGES CXX)
