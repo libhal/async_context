@@ -544,6 +544,11 @@ if its time frame has expired.
 └─────────────────────────────┘ Address N (bytes of stack memory)
 ```
 
+<div align="center">
+  <img src="docs/assets/proxy_linkage.svg" height="250" alt="async::proxy_context linkage">
+  <p>Figure 2. Illustration of the linkage between <code>async::proxy_context</code> and their parent proxies as well as their connection to the original context.</p>
+</div>
+
 ## Creating the package
 
 Before getting started, if you haven't used libhal before, follow the
