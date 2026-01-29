@@ -14,12 +14,12 @@ performance.
 > [!CAUTION]
 >
 > 🚧 This project is still under construction! 🚧
-
-
-> [!NOTE]
 >
 > This document is missing a section about how to create your own scheduler.
 > This is a missing feature we plan to add later.
+>
+> The APIs of this library are not stable and may change at anytime before
+> 1.0.0 release.
 
 ```C++
 #include <cassert>
@@ -231,6 +231,11 @@ The base context class that manages coroutine execution and memory. Derived clas
 2. Implement `do_schedule()` to handle blocking state notifications
 
 ### `async::future<T>`
+
+<div align="center">
+  <img src="docs/assets/future_states.svg" height="300" alt="async::future's state transition diagram">
+  <p>Figure 1. <code>async::future</code> state transition diagram.</p>
+</div>
 
 A coroutine return type containing either a value, asynchronous operation, or
 an `std::exception_ptr`. If this object is contains a coroutine handle, then it
