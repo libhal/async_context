@@ -77,6 +77,11 @@ class async_context_conan(ConanFile):
         if version < min_version:
             raise ConanInvalidConfiguration(error_msg)
 
+    def set_version(self):
+        # Use latest if not specified via command line
+        if not self.version:
+            self.version = "latest"
+
     def validate(self):
         if self.settings.get_safe("compiler.cppstd"):
             check_min_cppstd(self, self._min_cppstd)
@@ -98,6 +103,7 @@ class async_context_conan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
+        tc.generator = "Ninja"
         tc.generate()
 
         deps = CMakeDeps(self)

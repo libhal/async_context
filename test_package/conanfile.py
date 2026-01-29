@@ -36,6 +36,7 @@ class TestPackageConan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
+        tc.generator = "Ninja"
         tc.generate()
 
         deps = CMakeDeps(self)

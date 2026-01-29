@@ -16,6 +16,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Generate compile commands for anyone using our libraries.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 # The rest are self explanatory...
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 set(BUILD_UNIT_TESTS ON)
