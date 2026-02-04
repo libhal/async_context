@@ -26,7 +26,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pre-commit:
+    name: 🧹 Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get install -y doxygen
+      - uses: pre-commit/action@v3.0.1
+
   package_and_upload_all_check:
+    name: 🔎 Package Validation
     uses: libhal/ci/.github/workflows/package_and_upload_all.yml@5.x.y
     with:
       modules_support_needed: true

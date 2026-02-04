@@ -23,8 +23,29 @@ set(BUILD_UNIT_TESTS ON)
 set(RUN_UNIT_TESTS ON)
 set(BUILD_BENCHMARKS ON)
 set(RUN_BENCHMARKS OFF)
+set(USE_CLANG_TIDY ON)
 
 project(async_context LANGUAGES CXX)
+
+# ==============================================================================
+# Find clang-tidy
+# ==============================================================================
+
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Cross compiling, skipping clang-tidy")
+else()
+    if(USE_CLANG_TIDY)
+        find_program(CLANG_TIDY_EXE NAMES clang-tidy)
+        if(CLANG_TIDY_EXE)
+            message(STATUS "Clang-tidy found: ${CLANG_TIDY_EXE}")
+            set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")
+        else()
+            message(STATUS "Clang-tidy not found - continuing without clang-tidy")
+        endif()
+    else()
+        message(WARNING "Clang-tidy checks disabled")
+    endif()
+endif()
 
 # ==============================================================================
 # Library
