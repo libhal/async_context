@@ -33,11 +33,13 @@
 import async_context;
 
 // Quick Bench: https://quick-bench.com/
-// Compiler flags: -std=c++23 -O3 -DNDEBUG
+// Compiler flags: -std=c++23 -O3 -D NDEBUG
 
 // ============================================================================
 // BENCHMARKS
 // ============================================================================
+
+// NOLINTBEGIN(clang-analyzer-deadcode.DeadStores)
 
 // ----------------------------------------------------------------------------
 // 1. BASELINE: Direct returns, 3 levels deep
@@ -477,4 +479,4 @@ static void bm_future_void_coroutine_context_resume(benchmark::State& state)
 BENCHMARK(bm_future_void_coroutine_context_resume);
 
 BENCHMARK_MAIN();
-// NOLINTEND(readability-identifier-naming)
+// NOLINTEND(clang-analyzer-deadcode.DeadStores)

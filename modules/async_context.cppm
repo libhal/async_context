@@ -1591,7 +1591,7 @@ struct final_awaiter
    * continuation of the calling coroutine.
    *
    * @param p_completing_coroutine The coroutine handle that is completing
-   * @return The coroutine handle to resume next, which is a symmetryic transfer
+   * @return The coroutine handle to resume next, which is a symmetric transfer
    * from this completing coroutine to its continuation (what called it
    * originally).
    */
@@ -1643,15 +1643,19 @@ struct promise_return_base
   void return_value(U&& p_value) noexcept
     requires std::is_constructible_v<T, U&&>
   {
-    // set future to its awaited T value
+    // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): clang-tidy incorrectly
+    // assumes this pointer is uninitialized. The promise is constructed from
+    // the future returned by `get_return_object()`, which properly initializes
+    // this promise.
     m_future_state->template emplace<T>(std::forward<U>(p_value));
+    // NOLINTEND(clang-analyzer-core.CallAndMessage)
   }
 
   /**
    * @brief Pointer to the future state that should be set at future<T>
    * construction.
    */
-  future_state<T>* m_future_state;
+  future_state<T>* m_future_state = nullptr;
 };
 
 /**
@@ -1667,14 +1671,19 @@ struct promise_return_base<void>
    */
   void return_void() noexcept
   {
+    // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): clang-tidy incorrectly
+    // assumes this pointer is uninitialized. The promise is constructed from
+    // the future returned by `get_return_object()`, which properly initializes
+    // this promise.
     *m_future_state = std::monostate{};
+    // NOLINTEND(clang-analyzer-core.CallAndMessage)
   }
 
   /**
    * @brief Pointer to the future state that should be set at future<void>
    * construction.
    */
-  future_state<void>* m_future_state;
+  future_state<void>* m_future_state = nullptr;
 };
 
 /**

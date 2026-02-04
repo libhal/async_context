@@ -45,22 +45,22 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     };
 
     {
-      expect(that % count == counter_pair{ 0, 0 });
+      expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
       expect(that % ends_reached == 0);
 
       auto future = c(ctx);
 
-      expect(that % count == counter_pair{ 0, 0 });
+      expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
       expect(that % ends_reached == 0);
 
       future.resume();
 
-      expect(that % count == counter_pair{ 3, 0 });
+      expect(that % count == counter_pair{ .constructed = 3, .destructed = 0 });
       expect(that % ends_reached == 0);
       expect(that % 0 < ctx.memory_used());
     }  // destroy future
 
-    expect(that % count == counter_pair{ 3, 3 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };
@@ -104,23 +104,23 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     future.resume();
 
-    expect(that % count == counter_pair{ 3, 0 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 0 });
     expect(that % ends_reached == 0);
     expect(that % 0 < ctx.memory_used());
 
     future.cancel();
 
-    expect(that % count == counter_pair{ 3, 3 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };
@@ -164,17 +164,17 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     future.resume();
 
-    expect(that % count == counter_pair{ 3, 0 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 0 });
     expect(that % ends_reached == 0);
     expect(that % 0 < ctx.memory_used());
     expect(that % false == future.has_value());
@@ -182,7 +182,7 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
 
     ctx.cancel();
 
-    expect(that % count == counter_pair{ 3, 3 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
     expect(that % false == future.has_value());
@@ -232,12 +232,12 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       co_return;
     };
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     auto future = c(ctx);
 
-    expect(that % count == counter_pair{ 0, 0 });
+    expect(that % count == counter_pair{ .constructed = 0, .destructed = 0 });
     expect(that % ends_reached == 0);
 
     std::println("Resume until future reaches suspension @ coroutine A");
@@ -247,7 +247,7 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
       << "runtime_error exception was not thrown!";
     expect(that % future.done());
     expect(that % not future.has_value());
-    expect(that % count == counter_pair{ 3, 3 });
+    expect(that % count == counter_pair{ .constructed = 3, .destructed = 3 });
     expect(that % ends_reached == 0);
     expect(that % 0 == ctx.memory_used());
   };

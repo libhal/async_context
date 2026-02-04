@@ -10,6 +10,7 @@ export module test_utils;
 
 import async_context;
 
+// NOLINTBEGIN(bugprone-exception-escape)
 export namespace async {
 std::ostream& operator<<(std::ostream& out, blocked_by b)
 {
@@ -148,3 +149,4 @@ export {
     std::string_view m_label;
   };
 }
+// NOLINTEND(bugprone-exception-escape)

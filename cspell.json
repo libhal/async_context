@@ -38,6 +38,14 @@
     "Estell",
     "NOLINTNEXTLINE",
     "bugprone",
+    "println",
+    "cassert",
+    "coro",
+    "chrono",
+    "EABI",
+    "NDEBUG",
+    "malloc",
+    "uptr"
   ],
   "ignorePaths": [
     "build/",
