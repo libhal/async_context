@@ -36,6 +36,14 @@ class async_context_conan(ConanFile):
     exports_sources = "modules/*", "benchmarks/*", "tests/*", "CMakeLists.txt", "LICENSE", ".clang-tidy"
     package_type = "static-library"
     shared = False
+    options = {
+        "enable_clang_tidy": [True, False],
+        "clang_tidy_fix": [True, False],
+    }
+    default_options = {
+        "enable_clang_tidy": False,
+        "clang_tidy_fix": False,
+    }
 
     @property
     def _min_cppstd(self):
@@ -104,6 +112,8 @@ class async_context_conan(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         tc.generator = "Ninja"
+        tc.variables["LIBHAL_ENABLE_CLANG_TIDY"] = self.options.enable_clang_tidy
+        tc.variables["LIBHAL_CLANG_TIDY_FIX"] = self.options.clang_tidy_fix
         tc.generate()
 
         deps = CMakeDeps(self)

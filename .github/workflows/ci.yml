@@ -44,3 +44,8 @@ jobs:
       modules_support_needed: true
       coroutine_support_needed: true
     secrets: inherit
+
+  tests:
+    name: ✅ Testing w/ Clang-Tidy enabled
+    uses: libhal/ci/.github/workflows/tests.yml@5.x.y
+    secrets: inherit
