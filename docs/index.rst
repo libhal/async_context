@@ -1,5 +1,5 @@
 async_context API documentation
-=======================================
+==================================
 
 **Welcome to async_context API documentation**
 
@@ -10,6 +10,6 @@ performance.
 
 .. toctree::
   :caption: async_context Docs
-  :maxdepth: 5
+  :maxdepth: 4
 
-  async_context API <api/index>
+  api/async_context
