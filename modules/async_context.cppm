@@ -1506,7 +1506,7 @@ protected:
   // coroutine handle for the coroutine that called and awaited the future that
   // generated this promise is stored here.
   std::coroutine_handle<> m_continuation = context::noop_sentinel;
-  class context* m_context;
+  class context* m_context = nullptr;
   cancellation_fn* m_cancel = nullptr;
 };
 
