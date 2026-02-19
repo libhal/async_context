@@ -6,7 +6,8 @@
 import async_context;
 import test_utils;
 
-boost::ut::suite<"proxy_tests"> proxy_tests = []() {
+void proxy_tests()
+{
   using namespace boost::ut;
   using namespace std::chrono_literals;
 
@@ -158,3 +159,8 @@ boost::ut::suite<"proxy_tests"> proxy_tests = []() {
     expect(that % 0 == ctx.memory_used());
   };
 };
+
+int main()
+{
+  proxy_tests();
+}

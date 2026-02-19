@@ -6,7 +6,8 @@
 import async_context;
 import test_utils;
 
-boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
+void cancellation_tests()
+{
   using namespace boost::ut;
   using namespace std::chrono_literals;
 
@@ -252,3 +253,8 @@ boost::ut::suite<"cancellation_tests"> cancellation_tests = []() {
     expect(that % 0 == ctx.memory_used());
   };
 };
+
+int main()
+{
+  cancellation_tests();
+}

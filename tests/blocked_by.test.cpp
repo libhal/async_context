@@ -6,7 +6,8 @@
 import async_context;
 import test_utils;
 
-boost::ut::suite<"blocking_states"> blocking_states = []() {
+void blocking_states()
+{
   using namespace boost::ut;
   using namespace std::chrono_literals;
 
@@ -208,3 +209,8 @@ boost::ut::suite<"blocking_states"> blocking_states = []() {
     expect(that % 4 == step);
   };
 };
+
+int main()
+{
+  blocking_states();
+}

@@ -6,7 +6,8 @@
 import async_context;
 import test_utils;
 
-boost::ut::suite<"guards_tests"> guards_tests = []() {
+void guards_tests()
+{
   using namespace boost::ut;
   using namespace std::chrono_literals;
   "Context Token"_test = []() {
@@ -128,3 +129,8 @@ boost::ut::suite<"guards_tests"> guards_tests = []() {
     expect(that % 0 == ctx2.memory_used());
   };
 };
+
+int main()
+{
+  guards_tests();
+}

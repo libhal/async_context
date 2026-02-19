@@ -5,7 +5,8 @@
 import async_context;
 import test_utils;
 
-boost::ut::suite<"basics"> basics = []() {
+void basics()
+{
   using namespace boost::ut;
 
   "sync return type void"_test = []() {
@@ -250,3 +251,8 @@ boost::ut::suite<"basics"> basics = []() {
     expect(that % 2 == step);
   };
 };
+
+int main()
+{
+  basics();
+}

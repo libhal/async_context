@@ -1980,7 +1980,7 @@ public:
       return handle;
     }
 
-    constexpr monostate_or<T>& await_resume() const
+    [[nodiscard]] constexpr monostate_or<T>& await_resume() const
       requires(not std::is_void_v<T>)
     {
       if (std::holds_alternative<T>(m_operation.m_state)) [[likely]] {

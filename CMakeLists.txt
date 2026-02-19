@@ -12,168 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.28)
-
-# Generate compile commands for anyone using our libraries.
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-# The rest are self explanatory...
-set(CMAKE_COLOR_DIAGNOSTICS ON)
-set(BUILD_UNIT_TESTS ON)
-set(RUN_UNIT_TESTS ON)
-set(BUILD_BENCHMARKS ON)
-set(RUN_BENCHMARKS OFF)
-set(USE_CLANG_TIDY ON)
+cmake_minimum_required(VERSION 4.0)
 
 project(async_context LANGUAGES CXX)
 
-# ==============================================================================
-# Find clang-tidy
-# ==============================================================================
+# libhal cmake utilities from libhal-cmake-util
+# Source: https://github.com/libhal/libhal-cmake-util
+find_package(LibhalCMakeUtil REQUIRED)
 
-if(CMAKE_CROSSCOMPILING)
-    message(STATUS "Cross compiling, skipping clang-tidy")
-elseif(LIBHAL_ENABLE_CLANG_TIDY)
-    find_program(CLANG_TIDY_EXE NAMES clang-tidy)
-    if(CLANG_TIDY_EXE)
-        message(STATUS "Clang-tidy found: ${CLANG_TIDY_EXE}")
-        set(CLANG_TIDY_CMD "${CLANG_TIDY_EXE};--config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy")
-        if(LIBHAL_CLANG_TIDY_FIX)
-            list(APPEND CLANG_TIDY_CMD "--fix")
-        endif()
-        set(CMAKE_CXX_CLANG_TIDY ${CLANG_TIDY_CMD})
-    else()
-        message(STATUS "Clang-tidy not found - continuing without clang-tidy")
-    endif()
-else()
-    message(STATUS "Clang-tidy checks disabled (use -o enable_clang_tidy=True to enable)")
-endif()
+libhal_project_init()
+libhal_add_library(async_context MODULES modules/async_context.cppm)
+libhal_apply_compile_options(async_context)
+libhal_install_library(async_context NAMESPACE libhal)
+libhal_add_tests(async_context
+    TEST_NAMES
+        basic_context
+        basics
+        blocked_by
+        cancel
+        exclusive_access
+        proxy
 
-# ==============================================================================
-# Library
-# ==============================================================================
-
-add_library(async_context STATIC)
-target_compile_features(async_context PUBLIC cxx_std_23)
-target_sources(async_context PUBLIC
-    FILE_SET CXX_MODULES
-    TYPE CXX_MODULES
-
-    FILES
-    modules/async_context.cppm
-)
-target_compile_options(async_context PRIVATE
-    -g
-    -Werror
-    -Wno-unused-command-line-argument
-    -Wall
-    -Wextra
-    -Wshadow
-    -fexceptions
-    -fno-rtti)
-
-install(
-    TARGETS async_context
-    EXPORT async_context_targets
-    FILE_SET CXX_MODULES DESTINATION "."
-    LIBRARY DESTINATION "lib"
-    ARCHIVE DESTINATION "lib"
-    CXX_MODULES_BMI DESTINATION "bmi"
-)
-
-install(
-    EXPORT async_context_targets
-    FILE "async_context-config.cmake"
-    DESTINATION "lib/cmake"
-    CXX_MODULES_DIRECTORY "cxx-modules"
-    EXPORT_PACKAGE_DEPENDENCIES
-)
-
-# Always run this custom target by making it depend on ALL
-add_custom_target(copy_compile_commands ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${CMAKE_BINARY_DIR}/compile_commands.json
-    ${CMAKE_SOURCE_DIR}/compile_commands.json
-    DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json)
-
-# ==============================================================================
-# Unit testing
-# ==============================================================================
-
-if(NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS)
-    find_package(ut REQUIRED)
-    message(STATUS "Building unit tests!")
-    add_executable(async_unit_test)
-    # Add module files
-    target_sources(async_unit_test PUBLIC
-        FILE_SET CXX_MODULES
-        TYPE CXX_MODULES
-        FILES
+    MODULES
         tests/util.cppm
-        PRIVATE
-        tests/main.test.cpp
-        tests/basics.test.cpp
-        tests/basic_context.test.cpp
-        tests/blocked_by.test.cpp
-        tests/cancel.test.cpp
-        tests/exclusive_access.test.cpp
-        tests/proxy.test.cpp
-    )
-
-    target_compile_features(async_unit_test PUBLIC cxx_std_23)
-    target_compile_options(async_unit_test PRIVATE
-        -g
-        -Werror
-        -Wno-unused-command-line-argument
-        -Wall
-        -Wextra
-        -Wshadow
-        -fexceptions
-        -fsanitize=address
-        -fno-rtti)
-
-    target_link_options(async_unit_test PRIVATE
-        -g
-        -fsanitize=address)
-    target_link_libraries(async_unit_test PRIVATE async_context Boost::ut)
-
-    if(RUN_UNIT_TESTS)
-        add_custom_target(run_tests ALL DEPENDS async_unit_test
-                          COMMAND async_unit_test)
-    endif() # RUN_UNIT_TESTS
-else()
-    message(STATUS "Cross compiling, skipping unit test execution")
-endif() # NOT CMAKE_CROSSCOMPILING AND BUILD_UNIT_TESTS
+)
 
 # ==============================================================================
 # Benchmarking
 # ==============================================================================
 
-if(NOT CMAKE_CROSSCOMPILING AND BUILD_BENCHMARKS)
-    find_package(benchmark REQUIRED)
+if(NOT CMAKE_CROSSCOMPILING)
     message(STATUS "Building benchmarks tests!")
-    add_executable(async_benchmark)
-    target_sources(async_benchmark PRIVATE benchmarks/benchmark.cpp)
 
-    target_compile_features(async_benchmark PUBLIC cxx_std_23)
-    target_compile_options(async_benchmark PRIVATE
-        -g
-        -Werror
-        -Wno-unused-command-line-argument
-        -Wall
-        -Wextra
-        -Wshadow
-        -fexceptions
-        -fno-rtti)
-
-    target_link_libraries(async_benchmark PRIVATE
-                            async_context
-                            benchmark::benchmark)
-
-    if(RUN_BENCHMARKS)
-        add_custom_target(run_benchmark ALL DEPENDS async_benchmark
-                        COMMAND async_benchmark)
-    endif() # RUN_BENCHMARKS
+    find_package(benchmark REQUIRED)
+    libhal_add_executable(benchmark SOURCES benchmarks/benchmark.cpp)
+    target_link_libraries(benchmark PRIVATE async_context benchmark::benchmark)
 else()
     message(STATUS "Cross compiling, skipping benchmarks")
-endif() # if(NOT CMAKE_CROSSCOMPILING AND BUILD_BENCHMARKS)
+endif() # if(NOT CMAKE_CROSSCOMPILING)

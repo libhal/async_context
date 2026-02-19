@@ -1,12 +1,13 @@
 #include <coroutine>
+#include <thread>
 
 #include <boost/ut.hpp>
-#include <thread>
 
 import async_context;
 import test_utils;
 
-boost::ut::suite<"basic_context"> basic_context = []() {
+void basic_context()
+{
   using namespace boost::ut;
 
   static constexpr auto stack_size = 1024;
@@ -68,7 +69,7 @@ boost::ut::suite<"basic_context"> basic_context = []() {
     };
     auto co = [&step, &co2](async::context& p_ctx) -> async::future<int> {
       step = 1;  // skipped as the co2 will immediately start
-      co_await co2(p_ctx);
+      [[maybe_unused]] auto val = co_await co2(p_ctx);
       step = 4;
       co_return expected_return_value;
     };
@@ -190,3 +191,8 @@ boost::ut::suite<"basic_context"> basic_context = []() {
     expect(that % stack_size == ctx->capacity());
   };
 };
+
+int main()
+{
+  basic_context();
+}

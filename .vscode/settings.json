@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        ".clangd": "text",
+        ".clang-tidy": "yaml",
+        ".clang-format": "yaml"
+    },
+    "clangd.path": "${workspaceFolder}/compile_commands_clangd_resolver.py",
+    "clangd.arguments": ["--query-driver=**/g++,**/*-g++", "--clang-tidy"]
+}

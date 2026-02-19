@@ -32,7 +32,6 @@
 *.app
 
 # IDEs
-.vscode/
 archives/
 
 # GDB
