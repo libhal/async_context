@@ -19,6 +19,7 @@ from conan.tools.cmake import CMake, cmake_layout, CMakeToolchain, CMakeDeps
 from conan.tools.files import copy
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.build import check_min_cppstd
+from conan.tools.scm import Version
 from pathlib import Path
 
 
@@ -82,7 +83,7 @@ class async_context_conan(ConanFile):
                 f"Compiler {compiler} is not supported for C++20 modules")
 
         min_version, error_msg = min_versions[compiler_key]
-        if version < min_version:
+        if Version(version) < min_version:
             raise ConanInvalidConfiguration(error_msg)
 
     def set_version(self):
@@ -101,14 +102,21 @@ class async_context_conan(ConanFile):
         self.tool_requires("ninja/[^1.3.0]")
         self.requires("libhal-cmake-util/[^5.0.3]")
         if str(self.settings.os) != "baremetal":
-            self.test_requires("boost-ext-ut/2.3.1")
+            self.test_requires("boost-ext-ut/2.3.1",
+                               options={'disable_module': False})
             self.test_requires("benchmark/1.9.4")
 
     def requirements(self):
         pass
 
     def layout(self):
-        cmake_layout(self)
+        build_path = Path("build") / (
+            str(self.settings.arch) + "-" +
+            str(self.settings.os) + "-" +
+            str(self.settings.compiler) + "-" +
+            str(self.settings.compiler.version)
+        )
+        cmake_layout(self, build_folder=str(build_path))
 
     def generate(self):
         tc = CMakeToolchain(self)
@@ -124,6 +132,8 @@ class async_context_conan(ConanFile):
         cmake = CMake(self)
         cmake.configure()
         cmake.build()
+        if not self.conf.get("tools.build:skip_test", default=False):
+            cmake.ctest(["--output-on-failure"])
 
     def package(self):
         cmake = CMake(self)
@@ -132,6 +142,9 @@ class async_context_conan(ConanFile):
         copy(self, "LICENSE",
              dst=Path(self.package_folder) / "licenses",
              src=self.source_folder)
+
+    def package_id(self):
+        self.info.options.clear()
 
     def package_info(self):
         # DISABLE Conan's config file generation
