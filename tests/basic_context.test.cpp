@@ -120,7 +120,7 @@ void basic_context()
 
     auto co = [&step, &co2](async::context& p_ctx) -> async::future<int> {
       step = 1;  // skipped as the co2 will immediately start
-      auto val = co_await co2(p_ctx);
+      [[maybe_unused]] auto val = co_await co2(p_ctx);
       step = 2;
       co_return val + return_value2;
     };
@@ -165,7 +165,7 @@ void basic_context()
     auto co = [&step, &co2](async::context& p_ctx) -> async::future<int> {
       step = 1;  // skipped as the co2 will immediately start
       co_await 44ms;
-      auto val = co_await co2(p_ctx);
+      [[maybe_unused]] auto val = co_await co2(p_ctx);
       co_await 50ms;
       step = 2;
       co_return val + return_value2;

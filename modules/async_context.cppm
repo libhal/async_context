@@ -1396,7 +1396,11 @@ public:
   constexpr auto await_transform(
     std::chrono::duration<Rep, Ratio> p_sleep_duration) noexcept
   {
+    // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): False positive
+    // clang-tidy assuming that m_context is uninitialized even though its
+    // initialized at construction.
     return m_context->block_by_time(p_sleep_duration);
+    // NOLINTEND(clang-analyzer-core.CallAndMessage)
   }
 
   /**
@@ -1408,8 +1412,7 @@ public:
    */
   constexpr std::suspend_always await_transform() noexcept
   {
-    m_context->block_by_io();
-    return {};
+    return m_context->block_by_io();
   }
 
   /**
@@ -1503,7 +1506,7 @@ protected:
   // coroutine handle for the coroutine that called and awaited the future that
   // generated this promise is stored here.
   std::coroutine_handle<> m_continuation = context::noop_sentinel;
-  class context* m_context = nullptr;
+  class context* m_context;
   cancellation_fn* m_cancel = nullptr;
 };
 
