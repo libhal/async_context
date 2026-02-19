@@ -45,7 +45,12 @@
     "EABI",
     "NDEBUG",
     "malloc",
-    "uptr"
+    "uptr",
+    "doxygenclass",
+    "doxygenstruct",
+    "doxygenfunction",
+    "doxygenenum",
+    "alignof",
   ],
   "ignorePaths": [
     "build/",
