@@ -35,7 +35,7 @@ target_sources(${PROJECT_NAME} PUBLIC
     PRIVATE main.cpp
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
-target_link_libraries(${PROJECT_NAME} PRIVATE async_context)
+target_link_libraries(${PROJECT_NAME} PRIVATE libhal::async_context)
 
 target_compile_options(${PROJECT_NAME} PRIVATE
     -g
