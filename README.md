@@ -117,7 +117,7 @@ int main()
 
 Output:
 
-```
+```text
 Pipeline '🌟 System 1' starting...
 ['🌟 System 1': Sensor] Starting read...
 Pipeline '🔥 System 2' starting...
@@ -142,9 +142,8 @@ Both pipelines completed successfully!
 ## Features
 
 - **Stack-based coroutine allocation** - No heap allocations; coroutine frames are allocated from a user-provided stack buffer
-- **Cache-line optimized** - Context object fits within `std::hardware_constructive_interference_size` (typically 64 bytes)
 - **Blocking state tracking** - Built-in support for time, I/O, sync, and external blocking states
-- **Scheduler integration** - Virtual `do_schedule()` method allows custom scheduler implementations
+- **Flexible scheduler integration** - Schedulers can poll context state directly, or register an `unblock_listener` for ISR-safe event notification when contexts become unblocked
 - **Proxy contexts** - Support for supervised coroutines with timeout capabilities
 - **Exception propagation** - Proper exception handling through the coroutine chain
 - **Cancellation support** - Clean cancellation with RAII-based resource cleanup
@@ -222,13 +221,35 @@ work.
 
 ## Core Types
 
+### `async::unblock_listener`
+
+An interface for receiving notifications when a context becomes unblocked. This
+is the primary mechanism for schedulers to efficiently track which contexts are
+ready for execution without polling. Implement this interface and register it
+with `context::on_unblock()` to be notified when a context transitions to the
+unblocked state.
+
+The `on_unblock()` method is called from within `context::unblock()`, which may
+be invoked from ISRs, driver completion handlers, or other threads.
+Implementations must be ISR-safe and noexcept.
+
 ### `async::context`
 
-The base context class that manages coroutine execution and memory. Derived classes must:
+The base context class that manages coroutine execution and memory. Contexts
+are initialized with stack memory via their constructor:
 
-1. Provide stack memory via `initialize_stack_memory()`, preferably within the
-   constructor.
-2. Implement `do_schedule()` to handle blocking state notifications
+```cpp
+std::array<async::uptr, 1024> my_stack{};
+async::context ctx(my_stack);
+```
+
+> [!CRITICAL]
+> The stack memory MUST outlive the context object. The context does not own or
+> copy the stack memory—it only stores a reference to it.
+
+Optionally, contexts can register an `unblock_listener` to be notified of state
+changes, or the scheduler can poll the context state directly using `state()`
+and `pending_delay()`
 
 ### `async::future<T>`
 
@@ -322,49 +343,10 @@ async::future<int> outer(async::context& p_ctx) {
 }
 ```
 
-### Custom Context Implementation
+### Using `sync_wait()`
 
 ```cpp
-class my_context : public async::context {
-public:
-    std::array<async::uptr, 1024> m_stack{};
-
-    my_context() {
-        initialize_stack_memory(m_stack);
-    }
-    ~my_context() {
-        // ‼️ The most derived context must call cancel in its destructor
-        cancel();
-        // If memory was allocated, deallocate it here...
-    }
-
-private:
-    void do_schedule(async::blocked_by p_state,
-                     async::block_info p_info) noexcept override {
-        // Notify your scheduler of state changes
-    }
-};
-```
-
-#### Initialization
-
-In order to create a usable custom context, the stack memory must be
-initialized with a call to `initialize_stack_memory(span)` with a span to the
-memory for the stack. There is no requirements of where this memory comes from
-except that it be a valid source. Such sources can be array thats member of
-this object, dynamically allocated memory that the context has sole ownership
-of, or it can point to statically allocated memory that it has sole control and
-ownership over.
-
-#### Destruction
-
-The custom context must call `cancel()` before deallocating the stack memory.
-Once cancel completes, the stack memory may be deallocated.
-
-### Using `async::basic_context` with `sync_wait()`
-
-```cpp
-async::basic_context<512> ctx;
+async::inplace_context<512> ctx;
 auto future = my_coroutine(ctx);
 ctx.sync_wait([](async::sleep_duration p_sleep_time) {
     std::this_thread::sleep_for(p_sleep_time);
@@ -377,14 +359,14 @@ function works best for your systems.
 For example, for FreeRTOS this could be:
 
 ```C++
-// Helper function to convert std::chrono::nanoseconds to FreeRTOS ticks
-inline TickType_t ns_to_ticks(const std::chrono::nanoseconds& ns) {
-    // Convert nanoseconds to milliseconds (rounding to nearest ms)
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
+// Helper function to convert microseconds to FreeRTOS ticks
+inline TickType_t us_to_ticks(const std::chrono::microseconds& us) {
+    // Convert microseconds to milliseconds (rounding to nearest ms)
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(us).count();
     return pdMS_TO_TICKS(ms);
 }
 ctx.sync_wait([](async::sleep_duration p_sleep_time) {
-    xTaskDelay(ns_to_ticks(p_sleep_time));
+    xTaskDelay(us_to_ticks(p_sleep_time));
 });
 ```
 
@@ -576,7 +558,6 @@ To run the benchmarks on their own:
 ```bash
 ./build/Release/async_benchmark
 ```
-
 
 Within the [`CMakeList.txt`](./CMakeLists.txt), you can disable unit test or benchmarking by setting the following to `OFF`:
 

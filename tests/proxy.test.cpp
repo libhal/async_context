@@ -13,7 +13,9 @@ void proxy_tests()
 
   "Proxy Context (normal behavior, no timeout)"_test = []() {
     // Setup
-    test_context ctx;
+    std::array<async::uptr, 8192> stack{};
+    async::context ctx;
+    ctx.initialize_stack_memory(stack);
     std::println("====================================");
     std::println("Running Proxy Context Test (no timeout normal behavior)");
     std::println("====================================");
@@ -89,7 +91,7 @@ void proxy_tests()
 
   "Proxy Coroutines Timeout"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
     std::println("====================================");
     std::println("Running Proxy Context Test (with timeout)");
     std::println("====================================");

@@ -12,8 +12,8 @@ void guards_tests()
   using namespace std::chrono_literals;
   "Context Token"_test = []() {
     // Setup
-    test_context ctx1;
-    test_context ctx2;
+    async::inplace_context<1024> ctx1;
+    async::inplace_context<1024> ctx2;
 
     async::exclusive_access io_in_use;
 

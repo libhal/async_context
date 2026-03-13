@@ -9,7 +9,7 @@ Defined in namespace `async::v0`
 ```{doxygenclass} v0::context
 ```
 
-## async::basic_context
+## async::inplace_context
 
 Defined in namespace `async::v0`
 

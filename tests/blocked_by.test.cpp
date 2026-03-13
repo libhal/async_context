@@ -13,7 +13,9 @@ void blocking_states()
 
   "co_await 10ms & co_await 50ms"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
+
+    std::println("ctx.capacity() = {}", ctx.capacity());
 
     static constexpr int expected_return_value = 8748;
     unsigned step = 0;
@@ -31,7 +33,6 @@ void blocking_states()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -41,31 +42,28 @@ void blocking_states()
 
     // Verify 2
     expect(that % 0 < ctx.memory_used());
-    expect(that % ctx.info->scheduled_called_once);
-    expect(that % 1 == ctx.info->sleep_count);
     expect(that % not future.done());
-    expect(that % 10ms == ctx.info->last_sleep_time);
-
+    expect(that % 10ms == ctx.sleep_time());
     expect(that % not future.has_value());
     expect(that % 1 == step);
 
     // Exercise 3
+    ctx.unblock();
     future.resume();
 
     // Verify 3
     expect(that % 0 < ctx.memory_used());
-    expect(that % 2 == ctx.info->sleep_count);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 2 == step);
-    expect(that % 25ms == ctx.info->last_sleep_time);
+    expect(that % 25ms == ctx.sleep_time());
 
     // Exercise 4
+    ctx.unblock();
     future.resume();
 
     // Verify 4
     expect(that % 0 == ctx.memory_used());
-    expect(that % 2 == ctx.info->sleep_count);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % 3 == step);
@@ -74,7 +72,7 @@ void blocking_states()
 
   "context::block_by_io() "_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     unsigned step = 0;
     bool io_complete = false;
@@ -98,7 +96,6 @@ void blocking_states()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % 0 == step);
 
@@ -107,45 +104,43 @@ void blocking_states()
 
     // Verify 2
     expect(that % 0 < ctx.memory_used());
-    expect(that % ctx.info->scheduled_called_once);
-    expect(that % ctx.info->io_block);
+    expect(that % async::blocked_by::io == ctx.state());
     expect(that % not future.done());
     expect(that % 1 == step);
 
     // Exercise 3: stay in loop and re-block on io
+    ctx.unblock();
     future.resume();
 
     // Verify 3
     expect(that % 0 < ctx.memory_used());
-    expect(that % ctx.info->scheduled_called_once);
-    expect(that % ctx.info->io_block);
+    expect(that % async::blocked_by::io == ctx.state());
     expect(that % not future.done());
     expect(that % 1 == step);
 
     // Exercise 4: unblock IO and resume to final suspend
     io_complete = true;
+    ctx.unblock();
     future.resume();
 
     // Verify 4
     expect(that % 0 == ctx.memory_used());
-    expect(that % ctx.info->scheduled_called_once);
-    expect(that % ctx.info->io_block);
+    expect(that % async::blocked_by::nothing == ctx.state());
     expect(that % future.done());
     expect(that % 2 == step);
   };
 
   "blocked_by time, io, & sync"_test = []() {
     // Setup
-    auto info = std::make_shared<thread_info>();
-    test_context ctx1(info);
-    test_context ctx2(info);
+    async::inplace_context<1024> ctx1{};
+    async::inplace_context<1024> ctx2{};
 
     int step = 0;
 
     auto co = [&](async::context& p_context) -> async::future<void> {
       using namespace std::chrono_literals;
       step = 1;
-      co_await 100ns;
+      co_await 100us;
       step = 2;
       co_await p_context.block_by_io();
       step = 3;
@@ -160,7 +155,6 @@ void blocking_states()
     // Verify 1
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
-    expect(that % not ctx1.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % 0 == step);
 
@@ -170,20 +164,20 @@ void blocking_states()
     // Verify 2
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
-    expect(that % ctx1.info->scheduled_called_once);
-    expect(that % 100ns == ctx1.info->last_sleep_time);
-    expect(that % not ctx1.info->io_block);
+    expect(that % 100us == ctx1.sleep_time());
+    expect(that % ctx1.state() == async::blocked_by::time);
     expect(that % not future.done());
     expect(that % 1 == step);
 
     // Exercise 3
+    ctx1.unblock();
     future.resume();
 
     // Verify 3
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
-    expect(that % ctx1.info->scheduled_called_once);
-    expect(that % ctx1.info->io_block) << "context should be blocked by IO";
+    expect(that % ctx1.state() == async::blocked_by::io)
+      << "context should be blocked by IO";
     expect(that % not future.done());
     expect(that % 2 == step);
 
@@ -195,7 +189,7 @@ void blocking_states()
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
     expect(that % not future.done());
-    expect(that % &ctx2 == ctx1.info->sync_context)
+    expect(that % &ctx2 == ctx1.get_blocker())
       << "sync context should be &ctx2";
     expect(that % 3 == step);
 

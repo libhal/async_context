@@ -26,12 +26,15 @@ libhal_apply_compile_options(async_context)
 libhal_install_library(async_context NAMESPACE libhal)
 libhal_add_tests(async_context
     TEST_NAMES
-        basic_context
+        sync_wait
         basics
         blocked_by
         cancel
         exclusive_access
         proxy
+        basics_dep_inject
+        on_unblock
+        simple_scheduler
 
     MODULES
         tests/util.cppm
@@ -43,7 +46,6 @@ libhal_add_tests(async_context
 
 if(NOT CMAKE_CROSSCOMPILING)
     message(STATUS "Building benchmarks tests!")
-
     find_package(benchmark REQUIRED)
     libhal_add_executable(benchmark SOURCES benchmarks/benchmark.cpp)
     target_link_libraries(benchmark PRIVATE async_context benchmark::benchmark)

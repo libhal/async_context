@@ -271,25 +271,10 @@ __attribute__((noinline)) async::future<int> sync_future_level1(
   auto f = sync_future_level2(ctx, x);
   return sync_wait(f) + 1;
 }
-struct benchmark_context : public async::context
-{
-  std::array<async::uptr, 8192> m_stack{};
-
-  benchmark_context()
-  {
-    this->initialize_stack_memory(m_stack);
-  }
-
-private:
-  void do_schedule(async::blocked_by, async::block_info) noexcept override
-  {
-    // Do nothing for the benchmark
-  }
-};
 
 static void bm_future_sync_return(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -326,7 +311,7 @@ __attribute__((noinline)) async::future<int> coro_level1(async::context& ctx,
 
 static void bm_future_coroutine(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -367,7 +352,7 @@ __attribute__((noinline)) async::future<int> sync_in_coro_level1(
 
 static void bm_future_sync_await(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -408,7 +393,7 @@ __attribute__((noinline)) async::future<int> mixed_coro_level1(
 
 static void bm_future_mixed(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   for (auto _ : state) {
@@ -449,7 +434,7 @@ void_coro_level1(async::context& ctx, int& out, int x)
 
 static void bm_future_void_coroutine(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   int output = 0;
@@ -464,7 +449,7 @@ BENCHMARK(bm_future_void_coroutine);
 
 static void bm_future_void_coroutine_context_resume(benchmark::State& state)
 {
-  benchmark_context ctx;
+  async::inplace_context<1024> ctx;
 
   int input = 42;
   int output = 0;

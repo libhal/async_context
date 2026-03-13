@@ -6,57 +6,35 @@
 import async_context;
 import test_utils;
 
-void basic_context()
+void context()
 {
   using namespace boost::ut;
 
   static constexpr auto stack_size = 1024;
 
-  "sync return type void"_test = []() {
-    // Setup
-    async::basic_context<stack_size> ctx;
-
-    unsigned step = 0;
-    auto sync_coroutine = [&step](async::context&) -> async::future<void> {
-      step = 1;
-      return {};
-    };
-
-    // Exercise
-    auto future = sync_coroutine(ctx);
-
-    // Verify
-    expect(that % 0 == ctx->memory_used());
-    expect(that % future.done());
-    expect(that % future.has_value());
-    expect(that % 1 == step);
-
-    expect(that % stack_size == ctx->capacity());
-  };
-
   "sync_wait --> future<int>"_test = []() {
     // Setup
-    async::basic_context<1024> ctx;
+    async::inplace_context<stack_size> ctx;
 
     auto future = [](async::context&) -> async::future<int> {
       co_return 5;
     }(ctx);
 
-    ctx->sync_wait([](async::sleep_duration p_sleep_duration) {
+    ctx.sync_wait([](async::sleep_duration p_sleep_duration) {
       std::this_thread::sleep_for(p_sleep_duration);
     });
 
     // Verify
-    expect(that % 0 == ctx->memory_used());
+    expect(that % 0 == ctx.memory_used());
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % 5 == future.value());
-    expect(that % stack_size == ctx->capacity());
+    expect(that % stack_size == ctx.capacity());
   };
 
   "co_await coroutine"_test = []() {
     // Setup
-    async::basic_context<stack_size> ctx;
+    async::inplace_context<stack_size> ctx;
 
     static constexpr int expected_return_value = 1413;
     unsigned step = 0;
@@ -78,7 +56,7 @@ void basic_context()
     auto future = co(ctx);
 
     // Verify 1
-    expect(that % 0 < ctx->memory_used());
+    expect(that % 0 < ctx.memory_used());
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -87,7 +65,7 @@ void basic_context()
     future.resume();
 
     // Verify 2
-    expect(that % 0 < ctx->memory_used());
+    expect(that % 0 < ctx.memory_used());
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 2 == step);
@@ -96,18 +74,18 @@ void basic_context()
     future.resume();
 
     // Verify 3
-    expect(that % 0 == ctx->memory_used());
+    expect(that % 0 == ctx.memory_used());
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
     expect(that % 4 == step);
 
-    expect(that % stack_size == ctx->capacity());
+    expect(that % stack_size == ctx.capacity());
   };
 
   "co_await coroutine"_test = []() {
     // Setup
-    async::basic_context<stack_size> ctx;
+    async::inplace_context<stack_size> ctx;
 
     static constexpr int return_value1 = 1413;
     static constexpr int return_value2 = 4324;
@@ -129,7 +107,7 @@ void basic_context()
     auto future = co(ctx);
 
     // Verify 1
-    expect(that % 0 < ctx->memory_used());
+    expect(that % 0 < ctx.memory_used());
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -138,18 +116,18 @@ void basic_context()
     future.resume();
 
     // Verify 3
-    expect(that % 0 == ctx->memory_used());
+    expect(that % 0 == ctx.memory_used());
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_total == future.value());
     expect(that % 2 == step);
 
-    expect(that % stack_size == ctx->capacity());
+    expect(that % stack_size == ctx.capacity());
   };
 
   "co_await Xms + sync_wait"_test = []() {
     // Setup
-    async::basic_context<stack_size> ctx;
+    async::inplace_context<stack_size> ctx;
 
     static constexpr int return_value1 = 1413;
     static constexpr int return_value2 = 4324;
@@ -175,12 +153,12 @@ void basic_context()
     // Exercise
     auto future = co(ctx);
 
-    ctx->sync_wait([&](async::sleep_duration p_sleep_time) {
+    ctx.sync_wait([&](async::sleep_duration p_sleep_time) {
       sleep_cycles.push_back(p_sleep_time);
     });
 
     // Verify
-    expect(that % 0 == ctx->memory_used());
+    expect(that % 0 == ctx.memory_used());
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % 2 == step);
@@ -188,11 +166,11 @@ void basic_context()
     expect(that % sleep_cycles ==
            std::vector<async::sleep_duration>{ 44ms, 100ms, 50ms });
 
-    expect(that % stack_size == ctx->capacity());
+    expect(that % stack_size == ctx.capacity());
   };
 };
 
 int main()
 {
-  basic_context();
+  context();
 }

@@ -11,7 +11,7 @@ void basics()
 
   "sync return type void"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     unsigned step = 0;
     auto sync_coroutine = [&step](async::context&) -> async::future<void> {
@@ -24,7 +24,6 @@ void basics()
 
     // Verify
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % 1 == step);
@@ -32,7 +31,7 @@ void basics()
 
   "sync return type int"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr int expected_return_value = 5;
 
@@ -47,7 +46,6 @@ void basics()
 
     // Verify
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
@@ -56,7 +54,7 @@ void basics()
 
   "sync return type std::string"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr auto expected_return_value = "Hello, World\n";
 
@@ -72,7 +70,6 @@ void basics()
 
     // Verify
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
@@ -81,7 +78,7 @@ void basics()
 
   "co_return"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr int expected_return_value = 5;
     unsigned step = 0;
@@ -95,7 +92,6 @@ void basics()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -105,7 +101,6 @@ void basics()
 
     // Verify 2
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
@@ -114,7 +109,7 @@ void basics()
 
   "suspend then co_return"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr int expected_return_value = 1413;
     unsigned step = 0;
@@ -130,7 +125,6 @@ void basics()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -140,7 +134,6 @@ void basics()
 
     // Verify 2
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 1 == step);
@@ -150,7 +143,6 @@ void basics()
 
     // Verify 3
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
@@ -159,7 +151,7 @@ void basics()
 
   "co_await coroutine"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr int expected_return_value = 1413;
     unsigned step = 0;
@@ -182,7 +174,6 @@ void basics()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -192,7 +183,6 @@ void basics()
 
     // Verify 2
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 2 == step);
@@ -202,7 +192,6 @@ void basics()
 
     // Verify 3
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_return_value == future.value());
@@ -211,7 +200,7 @@ void basics()
 
   "co_await coroutine"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     static constexpr int return_value1 = 1413;
     static constexpr int return_value2 = 4324;
@@ -234,7 +223,6 @@ void basics()
 
     // Verify 1
     expect(that % 0 < ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % not future.done());
     expect(that % not future.has_value());
     expect(that % 0 == step);
@@ -244,7 +232,6 @@ void basics()
 
     // Verify 3
     expect(that % 0 == ctx.memory_used());
-    expect(that % not ctx.info->scheduled_called_once);
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % expected_total == future.value());

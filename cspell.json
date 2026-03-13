@@ -51,6 +51,7 @@
     "doxygenfunction",
     "doxygenenum",
     "alignof",
+    "inplace"
   ],
   "ignorePaths": [
     "build/",

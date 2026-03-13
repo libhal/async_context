@@ -13,7 +13,7 @@ void cancellation_tests()
 
   "Cancellation"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     counter_pair count{};
     int ends_reached = 0;
@@ -68,7 +68,7 @@ void cancellation_tests()
 
   "Cancellation"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     counter_pair count{};
     int ends_reached = 0;
@@ -128,7 +128,7 @@ void cancellation_tests()
 
   "Context Cancellation"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     counter_pair count{};
     int ends_reached = 0;
@@ -191,7 +191,7 @@ void cancellation_tests()
 
   "Exception Propagation"_test = []() {
     // Setup
-    test_context ctx;
+    async::inplace_context<1024> ctx;
 
     counter_pair count{};
     int ends_reached = 0;
