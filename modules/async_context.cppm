@@ -21,6 +21,7 @@ module;
 
 #include <bit>
 #include <chrono>
+#include <concepts>
 #include <coroutine>
 #include <exception>
 #include <new>
@@ -273,6 +274,19 @@ export using block_info =
 class promise_base;
 
 /**
+ * @brief Function signature for the transition handler
+ *
+ * It should accept a function with this signature:
+ *
+ * ```C++
+ * void function-name(async::blocked_by, async::block_info)
+ * ```
+ */
+export template<typename callable>
+concept transition_handler =
+  std::is_nothrow_invocable_r_v<void, callable, blocked_by, block_info>;
+
+/**
  * @brief The base context class for managing coroutine execution
  *
  * The context class is the core of the async_context library. It manages:
@@ -301,10 +315,20 @@ public:
   /**
    * @brief Default constructor for context
    *
-   * Creates an uninitialized context. Derived classes must call
-   * initialize_stack_memory() to properly set up the stack memory.
+   * Creates context without a stack. `initialize_stack_memory()` must be called
+   * before passing this context to a coroutine.
    */
   context() = default;
+
+  /**
+   * @brief Construct a new context object with stack memory.
+   *
+   * @param p_stack - the stack memory for the async operations
+   */
+  context(std::span<uptr> p_stack)
+    : m_stack(p_stack)
+  {
+  }
 
   /**
    * @brief Delete copy constructor
@@ -506,6 +530,7 @@ public:
    */
   void cancel();
 
+#if 0
   /**
    * @brief Resume the active coroutine on this context
    *
@@ -520,6 +545,62 @@ public:
     if (m_state != blocked_by::time) {
       m_active_handle.resume();
     }
+  }
+#endif
+
+  /**
+   * @brief
+   *
+   * @param p_on_transition - Function called when the context transitions from
+   * running to a blocked by state.
+   */
+  void resume(transition_handler auto&& p_on_transition)
+  {
+    using callable_t = decltype(p_on_transition);
+
+    struct trampoline : transition_object_t
+    {
+
+      context& m_context;
+      callable_t&& transition_handler;
+
+      constexpr trampoline(context& p_context, callable_t&& f)
+        : m_context(p_context)
+        , transition_handler(std::forward<callable_t>(f))
+      {
+        // Point the context transition handler object to this object
+        m_context.m_transition_handler_object = this;
+        // Set the transition function of this type such that the context can
+        // find and invoke it.
+        transition_function = invoke_function;
+      }
+
+      static void invoke_function(void* p_self,
+                                  blocked_by p_state,
+                                  block_info p_info) noexcept
+      {
+        // Safe because p_self is the type of this trampoline
+        auto* self = static_cast<trampoline*>(p_self);
+        //
+        self->transition_handler(p_state, p_info);
+      }
+
+      trampoline(trampoline const&) = delete;
+      trampoline(trampoline&&) = delete;
+      trampoline& operator=(trampoline const&) = delete;
+      trampoline& operator=(trampoline&&) = delete;
+
+      ~trampoline()
+      {
+        // Restore back to nullptr on destruction
+        m_context.m_transition_handler_object = nullptr;
+      }
+    };
+
+    // NOTE: this type is exception safe and restores the state of the context
+    // m_transition_handler_object field on destruction.
+    trampoline t(*this, std::forward<callable_t>(p_on_transition));
+    m_active_handle.resume();
   }
 
   /**
@@ -561,12 +642,30 @@ public:
   }
 
   /**
-   * @brief Virtual destructor for proper cleanup of derived classes
+   * @brief Amount of time to delay resuming this context
    *
-   * This virtual destructor ensures that derived context classes are properly
-   * cleaned up when deleted through a base class pointer.
+   * When a context is blocked by for a set duration of time, it is the
+   * responsibility of the scheduler to ensure that the context is not resumed
+   * until that duration of time has elapsed. In the event that the context is
+   * not blocked by time, then this returns 0.
+   *
+   * Calling this function multiple times returns the last sleep duration that
+   * was set by the async operation contained within the context. It is the
+   * responsibility of the scheduler to unblock this context, otherwise, calling
+   * resume() will immediately without resuming async operation.
+   *
+   * @return constexpr sleep_duration - the amount of time to delay resuming
+   * this context.
    */
-  virtual ~context() = default;
+  [[nodiscard]] constexpr sleep_duration sleep_time() const noexcept
+  {
+    if (auto* ptr = std::get_if<sleep_duration>(&m_info)) {
+      return *ptr;
+    }
+    return sleep_duration::zero();
+  }
+
+  ~context() = default;
 
 private:
   friend class promise_base;
@@ -620,7 +719,11 @@ private:
                                block_info p_info = std::monostate{}) noexcept
   {
     m_state = p_new_state;
-    schedule(p_new_state, p_info);
+
+    if (m_transition_handler_object) {
+      m_transition_handler_object->transition_function(
+        m_transition_handler_object, p_new_state, p_info);
+    }
   }
 
   /**
@@ -662,59 +765,30 @@ private:
     return coroutine_frame_stack_address;
   }
 
-  /**
-   * @brief Wrapper around call to do_schedule
-   *
-   * This wrapper exists to allow future extensibility
-   *
-   * @param p_block_state - state that this context has been set to
-   * @param p_block_info - information about the blocking conditions
-   */
-  void schedule(blocked_by p_block_state, block_info p_block_info) noexcept
-  {
-    return do_schedule(p_block_state, p_block_info);
-  }
-
-  /**
-   * @brief Implementations of context use this to notify their scheduler of
-   * changes to this async context.
-   *
-   * It is up to the scheduler to ensure that concurrent calls to this API are
-   * serialized appropriately. For a single threaded event loop, syncronization
-   * and serialization is not necessary. For a thread pool implementation,
-   * syncronization and serialization must be considered.
-   *
-   * @param p_block_state - the type of blocking event the context has
-   * occurred.
-   * @param p_block_info - Information about what exactly is blocking this
-   * context. If p_block_info is a sleep_duration, and the p_block_state is
-   * blocked_by::time, then this context is requesting to be scheduled at that
-   * or a later time. If the p_block_info is a sleep_duration, and the block
-   * state isn't blocked_by::time, then this sleep duration is a hint to the
-   * scheduler to when it would be appropriate to reschedule this context. The
-   * scheduler does not have to be abided by this. If p_block_info is a pointer
-   * to a context, then the pointed to context is currently blocking p_context.
-   * This can be used to determine when to schedule p_context again, but does
-   * not have to be abided by for proper function.
-   */
-  virtual void do_schedule(blocked_by p_block_state,
-                           block_info p_block_info) noexcept = 0;
   friend class proxy_context;
 
-  /* vtable ptr */                                          // word 1
-  std::coroutine_handle<> m_active_handle = noop_sentinel;  // word 2
-  std::span<uptr> m_stack{};                                // word 3-4
-  uptr* m_stack_pointer = nullptr;                          // word 5
-  blocked_by m_state = blocked_by::nothing;                 // word 6
-  proxy_info m_proxy{};                                     // word 7-8
-};
+  /**
+   * @brief Generic base for transition objects
+   *
+   * This class provides a generic way to invoke arbitrary transition_function's
+   * using inheritance
+   *
+   */
+  struct transition_object_t
+  {
+    using transition_function_t = void(void*, blocked_by, block_info) noexcept;
+    transition_function_t* transition_function;
+    // callable object immediately follows in memory (via inheritance)...
+  };
 
-// Context should stay close to a standard cache-line of 64 bytes (8 words) for
-// a 64-bit system. This compile time check ensures that the context does not
-// exceed the this boundary for the platform.
-static_assert(sizeof(context) <= std::hardware_constructive_interference_size,
-              "Context cannot be contained within a cache-line (as specified "
-              "by std::hardware_constructive_interference_size)");
+  transition_object_t* m_transition_handler_object = nullptr;  // word 1
+  std::coroutine_handle<> m_active_handle = noop_sentinel;     // word 2
+  std::span<uptr> m_stack{};                                   // word 3-4
+  uptr* m_stack_pointer = nullptr;                             // word 5
+  blocked_by m_state = blocked_by::nothing;                    // word 6
+  proxy_info m_proxy{};                                        // word 7-8
+  block_info m_info{};                                         // word 9-11
+};
 
 /**
  * @brief A proxy context that provides isolated stack space for supervised
@@ -780,7 +854,7 @@ public:
    * The destructor cancels any remaining operations and properly restores
    * the parent context's stack memory to its original state.
    */
-  ~proxy_context() override
+  ~proxy_context()
   {
     // Cancel any operations still on this context
     cancel();
@@ -789,6 +863,20 @@ public:
     // stack and the end of our stack.
     m_proxy.parent->m_stack = { m_proxy.parent->m_stack.begin(),
                                 m_stack.end() };
+  }
+
+  // Remove the transition handler version of the resume function
+  void resume(transition_handler auto&&) = delete;
+
+  /**
+   * @brief Resume the managed async operation
+   *
+   */
+  void resume()
+  {
+    context::resume([this](blocked_by p_state, block_info p_info) noexcept {
+      redirect_schedule_to_original(p_state, p_info);
+    });
   }
 
 private:
@@ -826,7 +914,7 @@ private:
         .original = m_proxy.original,
         .parent = &p_parent,
       };
-    } else {  // Otherwise, the current parent is the origin.
+    } else {  // Otherwise, the current parent is the original
       m_proxy = proxy_info{
         .original = &p_parent,
         .parent = &p_parent,
@@ -837,135 +925,18 @@ private:
   /**
    * @brief Forwards the schedule call to the original context
    *
-   * This method forwards scheduling notifications to the original context,
-   * ensuring that the parent context's scheduler is properly notified of
-   * state changes.
-   *
-   * @param p_block_state - state that this context has been set to
-   * @param p_block_info - information about the blocking conditions
+   * @param p_self - the proxy being called upon to invoke the scheduler
+   * @param p_state - the blocking state to be passed to the original's
+   * scheduler.
+   * @param p_info - the blocking info to be passed to the original's scheduler
    */
-  void do_schedule(blocked_by p_block_state,
-                   block_info p_block_info) noexcept override
+  constexpr void redirect_schedule_to_original(blocked_by p_state,
+                                               block_info p_info) noexcept
   {
-    m_proxy.original->schedule(p_block_state, p_block_info);
+    auto* original = m_proxy.original;
+    original->m_transition_handler_object->transition_function(
+      original, p_state, p_info);
   }
-};
-
-/**
- * @brief A basic context implementation that supports synchronous waiting
- *
- * The basic_context class provides a concrete implementation of the context
- * interface that supports synchronous waiting operations. It extends the base
- * context with functionality to wait for coroutines to complete using a simple
- * synchronous loop.
- *
- * NOTE: This class does not provide stack memory
- *
- * This context is particularly useful for testing and simple applications where
- * a scheduler isn't needed, as it provides a way to wait for all coroutines to
- * complete without requiring external scheduling.
- *
- * @note basic_context is designed for simple use cases and testing, not
- * production embedded systems where strict memory management is required.
- */
-class basic_context_impl : public context
-{
-public:
-  /**
-   * @brief Default constructor for basic_context_impl
-   *
-   * Creates a new basic context with default initialization.
-   */
-  basic_context_impl() = default;
-
-  /**
-   * @brief Virtual destructor for proper cleanup
-   *
-   * Ensures that the basic context is properly cleaned up when deleted.
-   */
-  ~basic_context_impl() override = default;
-
-  /**
-   * @brief Get the pending delay time for time-blocking operations
-   *
-   * This method returns the sleep duration that is currently pending for
-   * time-blocking operations. It's used by the sync_wait method to determine
-   * how long to sleep.
-   *
-   * @return The pending sleep duration
-   *
-   * @note This is an internal method used by the basic_context implementation
-   * to manage time-based blocking operations during synchronous waiting.
-   */
-  [[nodiscard]] constexpr sleep_duration pending_delay() const noexcept
-  {
-    return m_pending_delay;
-  }
-
-  /**
-   * @brief Perform sync_wait operation
-   *
-   * This method waits synchronously for all coroutines on this context to
-   * complete. It uses the provided delay function to sleep for the required
-   * duration when waiting for time-based operations.
-   *
-   * @tparam DelayFunc The type of the delay function (must be invocable with
-   *                   sleep_duration parameter)
-   * @param p_delay - a delay function, that accepts a sleep duration and
-   *                  returns void.
-   *
-   * @note This method is primarily intended for testing and simple applications
-   * where a synchronous wait is needed. It's not suitable for production
-   * embedded systems that require precise timing or real-time scheduling.
-   */
-  void sync_wait(std::invocable<sleep_duration> auto&& p_delay)
-  {
-    while (active_handle() != context::noop_sentinel) {
-      active_handle().resume();
-
-      if (state() == blocked_by::time) {
-        if (m_pending_delay == sleep_duration(0)) {
-          unblock_without_notification();
-          continue;
-        }
-        p_delay(m_pending_delay);
-        m_pending_delay = sleep_duration(0);
-        unblock_without_notification();
-      }
-    }
-  }
-
-private:
-  /**
-   * @brief Forwards the schedule call to the original context
-   *
-   * This method handles scheduling notifications for time-blocking operations.
-   * It stores the pending delay duration so that sync_wait can properly wait
-   * for it.
-   *
-   * @param p_block_state - state that this context has been set to
-   * @param p_block_info - information about the blocking conditions
-   */
-  void do_schedule(blocked_by p_block_state,
-                   block_info p_block_info) noexcept final
-  {
-    if (p_block_state == blocked_by::time) {
-      if (auto* ex = std::get_if<sleep_duration>(&p_block_info)) {
-        m_pending_delay = *ex;
-      } else {
-        m_pending_delay = sleep_duration{ 0 };
-      }
-    }
-    // Ignore the rest and poll them...
-  }
-
-  /**
-   * @brief The pending delay for time-blocking operations
-   *
-   * This member stores the sleep duration that is currently pending for
-   * time-blocking operations, allowing sync_wait to properly handle delays.
-   */
-  sleep_duration m_pending_delay{ 0 };
 };
 
 /**
@@ -1000,7 +971,7 @@ public:
     m_context.cancel();
   }
 
-  context& context()
+  context& get()
   {
     return m_context;
   }
@@ -1021,7 +992,7 @@ public:
   }
 
 private:
-  basic_context_impl m_context;
+  context m_context{};
   std::array<uptr, StackSizeInWords> m_stack{};
 };
 

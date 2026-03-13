@@ -58,14 +58,14 @@ export {
       this->initialize_stack_memory(m_stack);
     }
 
-    ~test_context() override
+    ~test_context()
     {
       cancel();
     }
 
   private:
     void do_schedule(async::blocked_by p_block_state,
-                     async::block_info p_block_info) noexcept override
+                     async::block_info p_block_info) noexcept
     {
       info->scheduled_called_once = true;
 

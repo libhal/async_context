@@ -281,7 +281,7 @@ struct benchmark_context : public async::context
   }
 
 private:
-  void do_schedule(async::blocked_by, async::block_info) noexcept override
+  void do_schedule(async::blocked_by, async::block_info) noexcept
   {
     // Do nothing for the benchmark
   }
