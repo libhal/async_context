@@ -17,9 +17,7 @@ import async_context;
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
   using namespace std::chrono_literals;
-  std::println("['{}': Sensor] Starting read...", p_name);
   co_await ctx.block_by_io();  // Simulate I/O operation
-  std::println("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
 
@@ -29,10 +27,8 @@ async::future<int> process_data(async::context& ctx,
                                 int value)
 {
   using namespace std::chrono_literals;
-  std::println("['{}': Process] Processing {}...", p_name, value);
   co_await 10ms;  // Simulate processing time
   int result = value * 2;
-  std::println("['{}': Process] Result: {}", p_name, result);
   co_return result;
 }
 
@@ -41,22 +37,18 @@ async::future<void> write_actuator(async::context& ctx,
                                    std::string_view p_name,
                                    int value)
 {
-  std::println("['{}': Actuator] Writing {}...", p_name, value);
   co_await ctx.block_by_io();
-  std::println("['{}': Actuator] Write complete!", p_name);
 }
 
 // Coordinates the full pipeline
 async::future<void> sensor_pipeline(async::context& ctx,
                                     std::string_view p_name)
 {
-  std::println("Pipeline '{}' starting...", p_name);
 
   int sensor_value = co_await read_sensor(ctx, p_name);
   int processed = co_await process_data(ctx, p_name, sensor_value);
   co_await write_actuator(ctx, p_name, processed);
 
-  std::println("Pipeline '{}' complete!\n", p_name);
 }
 
 // Type-erased future wrapper for storing different future types
@@ -147,6 +139,5 @@ int main()
 
   scheduler.resume_n(100);
 
-  std::println("Both pipelines completed successfully!");
   return 0;
 }
