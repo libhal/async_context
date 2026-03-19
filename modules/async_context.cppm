@@ -1,4 +1,4 @@
-// Copyright 2024 - 2025 Khalil Estell and the libhal contributors
+// Copyright 2024 - 2026 Khalil Estell and the libhal contributors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -333,7 +333,7 @@ public:
       }
 
     private:
-      void on_unblock(async::context const& p_context) noexcept override
+      void on_unblock(async::context& p_context) noexcept override
       {
         handler(p_context);
       }
@@ -362,7 +362,7 @@ private:
    * @note This method MUST be noexcept and ISR-safe. It may be called from
    * any execution context including interrupt handlers.
    */
-  virtual void on_unblock(context const& p_context) noexcept = 0;
+  virtual void on_unblock(context& p_context) noexcept = 0;
 };
 
 /**
@@ -499,8 +499,6 @@ public:
    */
   constexpr void unblock_without_notification() noexcept
   {
-    // We clear this information after the unblock call to allow the unblock
-    // call to inspect the context's current state.
     get_original().m_state = blocked_by::nothing;
     get_original().m_sleep_time = sleep_duration::zero();
     get_original().m_sync_blocker = nullptr;
@@ -526,6 +524,10 @@ public:
     if (get_original().m_listener) {
       get_original().m_listener->on_unblock(*this);
     }
+
+    // We clear this context state information after the unblock listener is
+    // invoked to allow the unblock listener to inspect the context's current
+    // state prior to being unblocked.
     unblock_without_notification();
   }
 
@@ -664,8 +666,11 @@ public:
    */
   void resume()
   {
-    // We cannot resume the a coroutine blocked by time.
-    // Only the scheduler can unblock a context state.
+    // We cannot resume the a coroutine blocked by time. Only the scheduler can
+    // unblock a context state.
+    //
+    // This needs to be here to ensure that sync_wait is possible, otherwise the
+    // blocked_by::time semantic cannot be supported.
     if (state() != blocked_by::time) {
       m_active_handle.resume();
     }
@@ -924,15 +929,16 @@ private:
     return coroutine_frame_stack_address;
   }
 
+  // A concern for this library is how large the context objet is thus the word
+  // sizes for each field is denoted below.
   std::coroutine_handle<> m_active_handle = noop_sentinel;  // word 1
   uptr* m_stack_pointer = nullptr;                          // word 2
   std::span<uptr> m_stack{};                                // word 3-4
   context* m_original = nullptr;                            // word 5
-  // ----------- Only available from the original -----------
-  unblock_listener* m_listener = nullptr;                // word 6
-  sleep_duration m_sleep_time = sleep_duration::zero();  // word 7
-  context* m_sync_blocker = nullptr;                     // word 8
-  blocked_by m_state = blocked_by::nothing;              // word 9: pad 3
+  unblock_listener* m_listener = nullptr;                   // word 6
+  sleep_duration m_sleep_time = sleep_duration::zero();     // word 7
+  context* m_sync_blocker = nullptr;                        // word 8
+  blocked_by m_state = blocked_by::nothing;                 // word 9: pad 3
 };
 
 /**
@@ -1078,8 +1084,8 @@ public:
 
   inplace_context(inplace_context const&) = delete;
   inplace_context& operator=(inplace_context const&) = delete;
-  inplace_context(inplace_context&&) = default;
-  inplace_context& operator=(inplace_context&&) = default;
+  inplace_context(inplace_context&&) = delete;
+  inplace_context& operator=(inplace_context&&) = delete;
 
   ~inplace_context()
   {

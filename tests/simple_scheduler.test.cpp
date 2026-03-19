@@ -48,7 +48,6 @@ async::future<void> sensor_pipeline(async::context& ctx,
   int sensor_value = co_await read_sensor(ctx, p_name);
   int processed = co_await process_data(ctx, p_name, sensor_value);
   co_await write_actuator(ctx, p_name, processed);
-
 }
 
 // Type-erased future wrapper for storing different future types

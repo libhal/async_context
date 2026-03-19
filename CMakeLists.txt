@@ -21,7 +21,10 @@ project(async_context LANGUAGES CXX)
 find_package(LibhalCMakeUtil REQUIRED)
 
 libhal_project_init()
-libhal_add_library(async_context MODULES modules/async_context.cppm)
+libhal_add_library(async_context
+    MODULES
+        modules/async_context.cppm
+        modules/schedulers.cppm)
 libhal_apply_compile_options(async_context)
 libhal_install_library(async_context NAMESPACE libhal)
 libhal_add_tests(async_context
@@ -35,6 +38,8 @@ libhal_add_tests(async_context
         basics_dep_inject
         on_unblock
         simple_scheduler
+        clock_adapter
+        run_until_done
 
     MODULES
         tests/util.cppm

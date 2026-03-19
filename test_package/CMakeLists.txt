@@ -46,6 +46,12 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     -Wshadow
     -fexceptions
     -fno-rtti)
+
+if(NOT CMAKE_CROSSCOMPILING)
+    target_compile_options(${PROJECT_NAME} PRIVATE -fsanitize=address)
+    target_link_options(${PROJECT_NAME} PRIVATE -fsanitize=address)
+endif()
+
 # Always run this custom target by making it depend on ALL
 add_custom_target(copy_compile_commands ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

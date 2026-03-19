@@ -73,7 +73,7 @@ void on_upload_test()
       bool unblock_called = false;
       async::context const* unblocked_context = nullptr;
 
-      void on_unblock(async::context const& p_context) noexcept override
+      void on_unblock(async::context& p_context) noexcept override
       {
         unblock_called = true;
         unblocked_context = &p_context;

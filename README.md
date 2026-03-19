@@ -22,14 +22,12 @@ performance.
 > 1.0.0 release.
 
 ```C++
-#include <cassert>
-
 #include <chrono>
-#include <coroutine>
 #include <print>
 #include <thread>
 
 import async_context;
+import async_context.schedulers;
 
 using namespace std::chrono_literals;
 
@@ -77,38 +75,45 @@ async::future<void> sensor_pipeline(async::context& ctx,
   std::println("Pipeline '{}' complete!\n", p_name);
 }
 
+// Unblocks any I/O-blocked context in ctx1 or ctx2 (simulates hardware
+// callbacks completing). Runs as a third coroutine alongside the pipelines.
+async::future<void> io_unblock_driver(async::context& p_ctx,
+                                      async::context& ctx1,
+                                      async::context& ctx2)
+{
+  while (true) {
+    if (ctx1.done() && ctx2.done()) {
+      co_return;
+    }
+    if (ctx1.state() == async::blocked_by::io) {
+      ctx1.unblock();
+    }
+    if (ctx2.state() == async::blocked_by::io) {
+      ctx2.unblock();
+    }
+    co_await 1us;
+  }
+}
+
 int main()
 {
-  // Create context and add them to the scheduler
-  basic_context<8192> ctx1(scheduler);
-  basic_context<8192> ctx2(scheduler);
+  async::inplace_context<512> ctx1;
+  async::inplace_context<512> ctx2;
+  async::inplace_context<512> driver_ctx;
 
-  // Run two independent pipelines concurrently
+  // Start the two pipelines and the I/O unblock driver
   auto pipeline1 = sensor_pipeline(ctx1, "🌟 System 1");
   auto pipeline2 = sensor_pipeline(ctx2, "🔥 System 2");
+  auto driver    = io_unblock_driver(driver_ctx, ctx1, ctx2);
 
-  // Round robin between each context
-  while (true) {
-   bool all_done = true;
-   for (auto& ctx : std::to_array({&ctx1, &ctx2}) {
-     if (not ctx->done()) {
-       all_done = false;
-       if (ctx->state() == async::blocked_by::nothing) {
-         ctx->resume();
-       }
-       if (ctx->state() == async::blocked_by::time) {
-         std::this_thread::sleep(ctx.pending_delay());
-         ctx.unblock();
-       }
-     }
-   }
-   if (all_done) {
-     break;
-   }
-  }
-
-  assert(pipeline1.done());
-  assert(pipeline2.done());
+  // Drive all three contexts to completion.
+  // run_until_done sleeps until the nearest time deadline when all contexts
+  // are blocked, and wakes immediately when any context becomes ready.
+  async::chrono_clock_adapter<std::chrono::steady_clock> clk;
+  async::run_until_done(
+    clk,
+    [](auto p_wake_time) { std::this_thread::sleep_until(p_wake_time); },
+    ctx1, ctx2, driver_ctx);
 
   std::println("Both pipelines completed successfully!");
   return 0;
@@ -285,6 +290,90 @@ An enum describing what a coroutine is blocked by:
 The state of this can be found from the `async::context::state()`. All states
 besides time are safe to resume at any point. If a context has been blocked by
 time, then it must defer calling resume until that time has elapsed.
+
+## Schedulers
+
+You can import the schedulers by importing `async_context.schedulers`. Importing
+`async_context.schedulers` also transitively imports `async_context`.
+
+### `async::clock` (concept)
+
+An instance-based clock concept. Unlike `std::chrono` clocks which require a
+static `now()`, `async::clock` requires an instance method so hardware clocks
+can be injected as runtime objects. A conforming type must provide:
+
+- `time_point` — the type returned by `now()`
+- `duration` — the difference type of two `time_point`s
+- `now() const` — returns the current `time_point`
+- `time_point` arithmetic: subtraction yields `duration`, addition of
+  `duration` yields `time_point`
+- `time_point::max()` — sentinel meaning "never wake"
+
+### `async::chrono_clock_adapter<ChronoClock>`
+
+A zero-size adapter that wraps any `std::chrono`-conforming clock (with a
+static `now()`) into an `async::clock` (with an instance `now()`). Because it
+holds no state, it is always optimized away entirely by the compiler.
+
+```cpp
+async::chrono_clock_adapter<std::chrono::steady_clock> clk;
+static_assert(async::clock<decltype(clk)>);
+
+auto now = clk.now(); // forwards to std::chrono::steady_clock::now()
+```
+
+Use this on hosted platforms. On bare-metal, implement `async::clock` directly
+against your hardware timer peripheral.
+
+### `async::run_until_done`
+
+Drives a fixed set of `async::context` objects to completion in a cooperative
+scheduling loop. On each iteration it resumes every context that is ready or
+whose time deadline has elapsed. When all remaining contexts are blocked, it
+calls the user-supplied `p_sleep_until` callable to suspend the CPU until the
+nearest deadline.
+
+```cpp
+// Without interruptible sleep
+async::run_until_done(
+  clk,
+  [](auto p_wake_time) { std::this_thread::sleep_until(p_wake_time); },
+  ctx0, ctx1, ctx2);
+```
+
+An overload accepts an `async::unblock_listener` as a third argument. The
+listener is registered on every context so that an I/O completion or ISR can
+wake `p_sleep_until` early, avoiding unnecessary latency when all contexts are
+time-blocked but an I/O event arrives before the deadline.
+
+```cpp
+async::run_until_done(
+  clk,
+  [](auto p_wake_time) {
+    // sleep until the deadline OR until woken by the listener below
+    platform_sleep_until(p_wake_time);
+  },
+  async::unblock_listener::from([](async::context& p_ctx) noexcept {
+    // called from ISR/thread when any context is unblocked
+    platform_wake_from_sleep();
+  }),
+  ctx0, ctx1, ctx2);
+```
+
+Key properties:
+
+- **Stack-allocated scheduler table** — no heap allocation; all internal
+  bookkeeping lives on the call stack and is destroyed when the function
+  returns, even on exception
+- **Listener lifetime safety** — every context's listener registration is
+  cleared in the destructor of the internal scheduler entry, so no context
+  can hold a dangling pointer after `run_until_done` returns
+- **Time-only sleep** — `p_sleep_until` is only called when all contexts are
+  time-blocked *and* none are immediately ready; it is never called if work
+  remains
+- **Exceptions** — any exception that propagates out of a coroutine is
+  re-thrown from `run_until_done`; all listener registrations are still
+  cleaned up via RAII before the exception escapes
 
 ## Usage
 
@@ -570,4 +659,4 @@ set(BUILD_BENCHMARKS OFF)
 
 Apache License 2.0 - See [LICENSE](LICENSE) for details.
 
-Copyright 2024 - 2025 Khalil Estell and the libhal contributors
+Copyright 2024 - 2026 Khalil Estell and the libhal contributors

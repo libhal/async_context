@@ -17,6 +17,7 @@
 #include <coroutine>
 #include <memory>
 #include <print>
+#include <ratio>
 #include <variant>
 #include <vector>
 
@@ -25,23 +26,22 @@
 #endif
 
 import async_context;
+import async_context.schedulers;
+
+using namespace std::chrono_literals;
 
 // Simulates reading sensor data with I/O delay
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
-  using namespace std::chrono_literals;
-  std::println("['{}': Sensor] Starting read...", p_name);
-  co_await ctx.block_by_io();  // Simulate I/O operation
   std::println("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
 
 // Processes data with computation delay
-async::future<int> process_data(async::context& ctx,
+async::future<int> process_data(async::context& p_ctx,
                                 std::string_view p_name,
                                 int value)
 {
-  using namespace std::chrono_literals;
   std::println("['{}': Process] Processing {}...", p_name, value);
   co_await 10ms;  // Simulate processing time
   int result = value * 2;
@@ -49,13 +49,12 @@ async::future<int> process_data(async::context& ctx,
   co_return result;
 }
 
-// Writes result with I/O delay
-async::future<void> write_actuator(async::context& ctx,
+async::future<void> write_actuator(async::context& p_ctx,
                                    std::string_view p_name,
                                    int value)
 {
   std::println("['{}': Actuator] Writing {}...", p_name, value);
-  co_await ctx.block_by_io();
+  co_await p_ctx.block_by_io();
   std::println("['{}': Actuator] Write complete!", p_name);
 }
 
@@ -72,94 +71,67 @@ async::future<void> sensor_pipeline(async::context& ctx,
   std::println("Pipeline '{}' complete!\n", p_name);
 }
 
-// Type-erased future wrapper for storing different future types
-struct future_wrapper
+// Stub implementation for ARM M Cortex targets without
+// std::chrono::steady_clock
+struct stub_clock
 {
-  virtual void resume() = 0;
-  [[nodiscard]] virtual bool done() const = 0;
-  virtual ~future_wrapper() = default;
-};
+  using duration = std::chrono::nanoseconds;
+  using rep = duration::rep;
+  using period = duration::period;
+  using time_point = std::chrono::time_point<stub_clock>;
+  static constexpr bool is_steady = false;
 
-template<typename T>
-class typed_future_wrapper : public future_wrapper
-{
-public:
-  explicit typed_future_wrapper(async::future<T>&& p_future)
-    : m_future(std::move(p_future))
+  static time_point now() noexcept
   {
+    return time_point(duration(0));
   }
-
-  void resume() override
-  {
-    m_future.resume();
-  }
-
-  [[nodiscard]] bool done() const override
-  {
-    return m_future.done();
-  }
-
-private:
-  async::future<T> m_future;
-};
-
-template<typename T>
-auto make_future_wrapper(async::future<T>&& p_future)
-{
-  return std::make_unique<typed_future_wrapper<T>>(std::move(p_future));
-}
-
-template<std::size_t ContextCount = 2, std::size_t ContextSize = 1024>
-struct round_robin_scheduler
-{
-  bool resume_n(int p_iterations)
-  {
-    for (int i = 0; i < p_iterations; i++) {
-      bool all_done = true;
-      for (auto& ctx : std::span(m_context_list).first(m_context_size)) {
-        if (not ctx.done()) {
-          all_done = false;
-          if (ctx.state() == async::blocked_by::nothing) {
-            ctx.resume();
-#if not __ARM_EABI__
-            std::this_thread::sleep_for(ctx.sleep_time());
-#endif
-            ctx.unblock();  // simulate quick unblocking of the context.
-          }
-        }
-      }
-      if (all_done) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  template<typename AsyncOperation, typename... OperationArgs>
-  void schedule_operation(AsyncOperation&& p_async_operation,
-                          OperationArgs... args)
-  {
-
-    auto future = p_async_operation(m_context_list[m_context_size], args...);
-    future_list[m_context_size] = make_future_wrapper(std::move(future));
-    m_context_size++;
-  }
-
-  std::array<async::inplace_context<ContextSize>, ContextCount>
-    m_context_list{};
-  std::array<std::unique_ptr<future_wrapper>, ContextCount> future_list{};
-  unsigned m_context_size = 0;
 };
 
 int main()
 {
-  round_robin_scheduler scheduler;
+#if __ARM_EABI__
+  async::chrono_clock_adapter<stub_clock> clk;
+#else
+  async::chrono_clock_adapter<std::chrono::steady_clock> clk;
+#endif
+
+  async::inplace_context<512> ctx0;
+  async::inplace_context<512> ctx1;
+  async::inplace_context<512> unblock_context;
 
   // Run two independent pipelines concurrently
-  scheduler.schedule_operation(sensor_pipeline, "🌟 System 1");
-  scheduler.schedule_operation(sensor_pipeline, "🔥 System 2");
+  auto pipeline1_future = sensor_pipeline(ctx0, "🌟 System 1");
+  auto pipeline2_future = sensor_pipeline(ctx1, "🔥 System 2");
+  // This is needed to simulate the context being unblocked by an external
+  // callback.
+  auto unblock_function =
+    [&ctx0, &ctx1](async::context& p_ctx) -> async::future<void> {
+    while (true) {
+      if (ctx0.done() and ctx1.done()) {
+        break;
+      }
+      if (ctx0.state() == async::blocked_by::io) {
+        ctx0.unblock();
+      }
+      if (ctx1.state() == async::blocked_by::io) {
+        ctx1.unblock();
+      }
+      co_await 1us;
+    }
+  };
 
-  scheduler.resume_n(100);
+  auto unblock_future = unblock_function(unblock_context);
+
+  auto stub_sleep_function = [](auto p_wake_time) {
+#if __ARM_EABI__
+    static_cast<void>(p_wake_time);  // ignore parameter
+#else
+    std::this_thread::sleep_until(p_wake_time);
+#endif
+  };
+
+  // Run ctx0, ctx1 and unblock_context to completion
+  async::run_until_done(clk, stub_sleep_function, ctx0, ctx1, unblock_context);
 
   std::println("Both pipelines completed successfully!");
   return 0;
