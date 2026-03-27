@@ -27,7 +27,6 @@ performance.
 #include <thread>
 
 import async_context;
-import async_context.schedulers;
 
 using namespace std::chrono_literals;
 
@@ -108,7 +107,10 @@ int main()
 
   // Drive all three contexts to completion.
   // run_until_done sleeps until the nearest time deadline when all contexts
-  // are blocked, and wakes immediately when any context becomes ready.
+  // are blocked.
+  //
+  // NOTE: A proper wake function should wake immediately when any context
+  // becomes ready, where as this one sleeps until it is awoken.
   async::chrono_clock_adapter<std::chrono::steady_clock> clk;
   async::run_until_done(
     clk,
@@ -244,7 +246,7 @@ The base context class that manages coroutine execution and memory. Contexts
 are initialized with stack memory via their constructor:
 
 ```cpp
-std::array<async::uptr, 1024> my_stack{};
+std::array<async::stack_word, 1024> my_stack{};
 async::context ctx(my_stack);
 ```
 

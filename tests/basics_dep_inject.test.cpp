@@ -12,7 +12,7 @@ void basics_dep_inject()
 
   "sync return type void"_test = []() {
     // Setup
-    std::array<async::uptr, 1024> stack{};
+    std::array<async::stack_word, 1024> stack{};
     async::context ctx{ stack };
 
     unsigned step = 0;
@@ -33,7 +33,7 @@ void basics_dep_inject()
 
   "suspend then co_return"_test = []() {
     // Setup
-    std::array<async::uptr, 1024> stack{};
+    std::array<async::stack_word, 1024> stack{};
     async::context ctx{ stack };
 
     static constexpr int expected_return_value = 1413;
@@ -83,7 +83,7 @@ void basics_dep_inject()
 
   "Call handler"_test = []() {
     // Setup
-    std::array<async::uptr, 1024> stack{};
+    std::array<async::stack_word, 1024> stack{};
     async::context ctx{ stack };
 
     static constexpr int expected_return_value = 1413;

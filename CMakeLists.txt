@@ -24,6 +24,7 @@ libhal_project_init()
 libhal_add_library(async_context
     MODULES
         modules/async_context.cppm
+        modules/coroutine.cppm
         modules/schedulers.cppm)
 libhal_apply_compile_options(async_context)
 libhal_install_library(async_context NAMESPACE libhal)

@@ -13,7 +13,7 @@ void proxy_tests()
 
   "Proxy Context (normal behavior, no timeout)"_test = []() {
     // Setup
-    std::array<async::uptr, 8192> stack{};
+    std::array<async::stack_word, 8192> stack{};
     async::context ctx;
     ctx.initialize_stack_memory(stack);
     std::println("====================================");

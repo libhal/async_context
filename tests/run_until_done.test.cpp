@@ -11,7 +11,6 @@
 #include <boost/ut.hpp>
 
 import async_context;
-import async_context.schedulers;
 
 using namespace std::chrono_literals;
 

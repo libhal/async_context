@@ -23,9 +23,9 @@ module;
 #include <type_traits>
 #include <utility>
 
-export module async_context.schedulers;
+export module async_context:schedulers;
 
-export import async_context;
+export import :coroutine;
 
 namespace async::inline v0 {
 /**
