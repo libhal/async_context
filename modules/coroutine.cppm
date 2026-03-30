@@ -221,8 +221,13 @@ export struct bad_coroutine_alloc : std::bad_alloc
  * has been cancelled. It indicates that the operation was explicitly cancelled
  * before completion.
  */
-export class operation_cancelled : public std::exception
+export struct operation_cancelled : public std::exception
 {
+  operation_cancelled(void const* p_future_address)
+    : future_address(p_future_address)
+  {
+  }
+
   /**
    * @brief Get exception message
    *
@@ -232,6 +237,8 @@ export class operation_cancelled : public std::exception
   {
     return "This future has been cancelled!";
   }
+
+  void const* future_address = nullptr;
 };
 
 // =============================================================================
@@ -771,7 +778,8 @@ public:
    * destroyed before it is removed from this context.
    *
    * @param p_listener - the address of the unblock listener to be invoked when
-   * this context is unblocked.
+   * this context is unblocked. A nullptr may be passed to this parameter. It
+   * has the same effect as calling `clear_unblock_listener()`.
    */
   void on_unblock(unblock_listener* p_listener)
   {
@@ -1926,6 +1934,11 @@ public:
     }
   }
 
+  constexpr bool cancelled()
+  {
+    return std::holds_alternative<cancelled_state>(m_state);
+  }
+
   constexpr void resume() const
   {
     if (std::holds_alternative<handle_type>(m_state)) {
@@ -2004,30 +2017,34 @@ public:
   {
     future<T>& m_operation;
 
-    constexpr explicit awaiter(future<T>& p_operation
-                               [[clang::lifetimebound]]) noexcept
+    constexpr explicit awaiter(future<T>& p_operation) noexcept
       : m_operation(p_operation)
     {
     }
 
     [[nodiscard]] constexpr bool await_ready() const noexcept
     {
-      return m_operation.m_state.index() >= 1;
+      return not std::holds_alternative<handle_type>(m_operation.m_state);
     }
 
+    /**
+     * @brief Communicates to the awaiter to simply resume this coroutine
+     * associated with this future.
+     *
+     * @tparam U - return type of the promise
+     * @param p_calling_coroutine - this type is forgotten. The parent calling
+     * coroutine's handle was captured when the future object was created via
+     * get_return_object().
+     * @return std::coroutine_handle<> - self to continue
+     */
     template<typename U>
     std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<promise<U>> p_calling_coroutine) noexcept
+      [[maybe_unused]] std::coroutine_handle<promise<U>>
+        p_calling_coroutine) noexcept
     {
       // This will not throw because the discriminate check was performed in
-      // `await_ready()` via the done() function. `done()` checks if the state
-      // is `handle_type` and if it is, it returns false, causing the code to
-      // call await_suspend().
-      auto handle = std::get<handle_type>(m_operation.m_state);
-      std::coroutine_handle<promise<U>>::from_address(handle.address())
-        .promise()
-        .continuation(p_calling_coroutine);
-      return handle;
+      // `await_ready()`.
+      return std::get<handle_type>(m_operation.m_state);
     }
 
     [[nodiscard]] constexpr monostate_or<T>& await_resume() const
@@ -2039,9 +2056,21 @@ public:
                    m_operation.m_state)) [[unlikely]] {
         std::rethrow_exception(
           std::get<std::exception_ptr>(m_operation.m_state));
+      } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
+        [[unlikely]] {
+        throw operation_cancelled{ &m_operation };
       }
 
-      throw operation_cancelled{};
+      // In the event that this coroutine awaiting this awaitable has
+      // requested the result of this awaitable before it has finished, then:
+      //
+      // - If contracts are enabled, then contract violation handler is called.
+      // - Otherwise, std::terminate is called.
+#if defined(__cpp_contracts)
+      contract_assert(std::holds_alternative<handle_type>(m_operation.m_state));
+#else
+      std::terminate();
+#endif
     }
 
     constexpr void await_resume() const
@@ -2054,9 +2083,21 @@ public:
                    m_operation.m_state)) [[unlikely]] {
         std::rethrow_exception(
           std::get<std::exception_ptr>(m_operation.m_state));
+      } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
+        [[unlikely]] {
+        throw operation_cancelled{ &m_operation };
       }
 
-      throw operation_cancelled{};
+      // In the event that this coroutine awaiting this awaitable has
+      // requested the result of this awaitable before it has finished, then:
+      //
+      // - If contracts are enabled, then contract violation handler is called.
+      // - Otherwise, std::terminate is called.
+#if defined(__cpp_contracts)
+      contract_assert(std::holds_alternative<handle_type>(m_operation.m_state));
+#else
+      std::terminate();
+#endif
     }
   };
 
@@ -2069,14 +2110,26 @@ public:
    * @return awaiter - An awaiter object that handles the suspension and
    * resumption of coroutines awaiting this future.
    *
+   * @pre The coroutine's context and the future's context are the same.
    * @note The awaiter will suspend the calling coroutine until this future
    * completes, then resume with either the result value or an exception. The
    * future will never be cancelled.
    */
-  [[nodiscard]] constexpr awaiter operator co_await() noexcept
+  [[nodiscard]] constexpr awaiter operator co_await() && noexcept
   {
     return awaiter{ *this };
   }
+
+  /**
+   * @brief co_awaiting an l-value future is banned
+   *
+   * Co-awaiting an l-value future provides a means to accidentally await on a
+   * future with a different context than the awaiting coroutine. This is unsafe
+   * and thus, banned.
+   *
+   * @return Nothing, deleted implementation
+   */
+  [[nodiscard]] constexpr awaiter operator co_await() & noexcept = delete;
 
 private:
   friend promise_type;
@@ -2127,6 +2180,10 @@ constexpr future<T> promise<T>::get_return_object() noexcept
 {
   using future_handle = std::coroutine_handle<promise<T>>;
   auto handle = future_handle::from_promise(*this);
+  // Chain: whatever was active becomes our continuation.
+  // If nothing was active (noop_sentinel), this is a normal top-level
+  // coroutine. If something WAS active, we implicitly sit on top of it.
+  m_continuation = m_context->active_handle();
   m_context->active_handle(handle);
   return future<T>{ handle };
 }

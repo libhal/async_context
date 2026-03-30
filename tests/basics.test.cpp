@@ -1,6 +1,8 @@
 #include <coroutine>
 
 #include <boost/ut.hpp>
+#include <print>
+#include <variant>
 
 import async_context;
 import test_utils;
@@ -164,9 +166,9 @@ void basics()
     };
     auto co = [&step, &co2](async::context& p_ctx) -> async::future<int> {
       step = 1;  // skipped as the co2 will immediately start
-      [[maybe_unused]] auto val = co_await co2(p_ctx);
+      auto const val = co_await co2(p_ctx);
       step = 4;
-      co_return expected_return_value;
+      co_return val;
     };
 
     // Exercise 1
@@ -198,7 +200,7 @@ void basics()
     expect(that % 4 == step);
   };
 
-  "co_await coroutine"_test = []() {
+  "co_await coroutine sync"_test = []() {
     // Setup
     async::inplace_context<1024> ctx;
 
