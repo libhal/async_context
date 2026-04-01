@@ -36,11 +36,12 @@ libhal_add_tests(async_context
         cancel
         exclusive_access
         proxy
-        basics_dep_inject
         on_unblock
         simple_scheduler
         clock_adapter
         run_until_done
+        async_stacking
+        context_swapping
 
     MODULES
         tests/util.cppm
