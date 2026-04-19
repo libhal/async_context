@@ -124,12 +124,6 @@ public:
   class guard
   {
   public:
-    guard(mutex* p_access, context* p_context)
-      : m_access(p_access)
-      , m_context(p_context)
-    {
-    }
-
     ~guard()
     {
       release();
@@ -159,6 +153,14 @@ public:
     }
 
   private:
+    friend class mutex;
+
+    guard(mutex* p_access, context* p_context)
+      : m_access(p_access)
+      , m_context(p_context)
+    {
+    }
+
     mutex* m_access;
     context* m_context;
 

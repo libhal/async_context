@@ -295,17 +295,17 @@ __attribute__((noinline)) async::future<int> coro_level3(async::context&, int x)
   co_return x * 2;
 }
 
-__attribute__((noinline)) async::future<int> coro_level2(async::context& ctx,
+__attribute__((noinline)) async::future<int> coro_level2(async::context& p_ctx,
                                                          int x)
 {
-  int val = co_await coro_level3(ctx, x);
+  int val = co_await coro_level3(p_ctx, x);
   co_return val + 1;
 }
 
-__attribute__((noinline)) async::future<int> coro_level1(async::context& ctx,
+__attribute__((noinline)) async::future<int> coro_level1(async::context& p_ctx,
                                                          int x)
 {
-  int val = co_await coro_level2(ctx, x);
+  int val = co_await coro_level2(p_ctx, x);
   co_return val + 1;
 }
 
@@ -316,7 +316,8 @@ static void bm_future_coroutine(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = coro_level1(ctx, input);
-    int result = sync_wait(f);
+    ctx.sync_wait([](auto...) {});
+    int result = f.value();
     benchmark::DoNotOptimize(result);
   }
 }
@@ -357,7 +358,8 @@ static void bm_future_sync_await(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = sync_in_coro_level1(ctx, input);
-    int result = sync_wait(f);
+    ctx.sync_wait([](auto...) {});
+    int result = f.value();
     benchmark::DoNotOptimize(result);
   }
 }
@@ -398,7 +400,8 @@ static void bm_future_mixed(benchmark::State& state)
   int input = 42;
   for (auto _ : state) {
     auto f = mixed_coro_level1(ctx, input);
-    int result = sync_wait(f);
+    ctx.sync_wait([](auto...) {});
+    int result = f.value();
     benchmark::DoNotOptimize(result);
   }
 }
@@ -440,7 +443,7 @@ static void bm_future_void_coroutine(benchmark::State& state)
   int output = 0;
   for (auto _ : state) {
     auto f = void_coro_level1(ctx, output, input);
-    sync_wait(f);
+    ctx.sync_wait([](auto...) {});
     benchmark::DoNotOptimize(f);
     benchmark::DoNotOptimize(output);
   }
