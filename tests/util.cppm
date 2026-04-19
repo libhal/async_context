@@ -19,12 +19,10 @@ std::ostream& operator<<(std::ostream& out, blocked_by b)
       return out << "nothing";
     case blocked_by::time:
       return out << "time";
-    case blocked_by::io:
-      return out << "io";
+    case blocked_by::signal:
+      return out << "signal";
     case blocked_by::sync:
       return out << "sync";
-    case blocked_by::external:
-      return out << "external";
     default:
       // For unknown values we print the numeric value
       return out << "blocked_by(" << static_cast<std::uint8_t>(b) << ')';

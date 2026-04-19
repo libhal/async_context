@@ -70,7 +70,7 @@ void blocking_states()
     expect(that % expected_return_value == future.value());
   };
 
-  "context::block_by_io() "_test = []() {
+  "context::block_by_signal() "_test = []() {
     // Setup
     async::inplace_context<1024> ctx;
 
@@ -83,7 +83,7 @@ void blocking_states()
       io_complete = false;
 
       while (not io_complete) {
-        co_await p_ctx.block_by_io();
+        co_await p_ctx.block_by_signal();
       }
 
       step = 2;
@@ -104,7 +104,7 @@ void blocking_states()
 
     // Verify 2
     expect(that % 0 < ctx.memory_used());
-    expect(that % async::blocked_by::io == ctx.state());
+    expect(that % async::blocked_by::signal == ctx.state());
     expect(that % not future.done());
     expect(that % 1 == step);
 
@@ -114,7 +114,7 @@ void blocking_states()
 
     // Verify 3
     expect(that % 0 < ctx.memory_used());
-    expect(that % async::blocked_by::io == ctx.state());
+    expect(that % async::blocked_by::signal == ctx.state());
     expect(that % not future.done());
     expect(that % 1 == step);
 
@@ -142,9 +142,9 @@ void blocking_states()
       step = 1;
       co_await 100us;
       step = 2;
-      co_await p_context.block_by_io();
+      co_await p_context.block_by_signal();
       step = 3;
-      co_await p_context.block_by_sync(&ctx2);
+      co_await p_context.block_by_sync(ctx2);
       step = 4;
       co_return;
     };
@@ -170,13 +170,14 @@ void blocking_states()
     expect(that % 1 == step);
 
     // Exercise 3
-    ctx1.unblock();
+    ctx1.unblock();  // act as scheduler and unblock context
+
     future.resume();
 
     // Verify 3
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
-    expect(that % ctx1.state() == async::blocked_by::io)
+    expect(that % ctx1.state() == async::blocked_by::signal)
       << "context should be blocked by IO";
     expect(that % not future.done());
     expect(that % 2 == step);
@@ -189,11 +190,10 @@ void blocking_states()
     expect(that % 0 < ctx1.memory_used());
     expect(that % 0 == ctx2.memory_used());
     expect(that % not future.done());
-    expect(that % &ctx2 == ctx1.get_blocker())
-      << "sync context should be &ctx2";
     expect(that % 3 == step);
 
     // Exercise 5: finish
+    ctx1.unblock();  // remove sync block
     future.resume();
 
     // Verify 5

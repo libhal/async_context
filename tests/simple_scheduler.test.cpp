@@ -17,7 +17,7 @@ import async_context;
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
   using namespace std::chrono_literals;
-  co_await ctx.block_by_io();  // Simulate I/O operation
+  co_await ctx.block_by_signal();  // Simulate I/O operation
   co_return 42;
 }
 
@@ -37,7 +37,7 @@ async::future<void> write_actuator(async::context& ctx,
                                    std::string_view p_name,
                                    int value)
 {
-  co_await ctx.block_by_io();
+  co_await ctx.block_by_signal();
 }
 
 // Coordinates the full pipeline

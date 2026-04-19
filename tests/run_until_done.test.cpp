@@ -42,7 +42,7 @@ async::task blocking_task(async::context& p_ctx,
   co_await p_sleep_time;
 
   while (simulated_hardware_busy) {
-    co_await p_ctx.block_by_io();
+    co_await p_ctx.block_by_signal();
   }
 
   co_return;
@@ -118,8 +118,8 @@ void run_sleep_task_test()
         std::println("Sleeping for {}", p_wake_time - clk.now());
         std::this_thread::sleep_until(p_wake_time);
       },
-      async::unblock_listener::from([&](async::context& p_ctx) noexcept {
-        if (p_ctx.state() == async::blocked_by::io) {
+      async::context_listener::from([&](async::context& p_ctx) noexcept {
+        if (p_ctx.state() == async::blocked_by::signal) {
           std::lock_guard lock(unblocked_mutex);
           unblocked_contexts.push_back(&p_ctx);
         }

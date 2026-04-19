@@ -16,3 +16,4 @@ export module async_context;
 
 export import :coroutine;
 export import :schedulers;
+export import :sync;
