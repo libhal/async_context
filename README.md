@@ -34,7 +34,7 @@ using namespace std::chrono_literals;
 async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
 {
   std::println("['{}': Sensor] Starting read...", p_name);
-  co_await ctx.block_by_io();  // Simulate I/O operation
+  co_await ctx.block_by_signal();  // Simulate I/O operation
   std::println("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
@@ -57,7 +57,7 @@ async::future<void> write_actuator(async::context& ctx,
                                    int value)
 {
   std::println("['{}': Actuator] Writing {}...", p_name, value);
-  co_await ctx.block_by_io();
+  co_await ctx.block_by_signal();
   std::println("['{}': Actuator] Write complete!", p_name);
 }
 
@@ -84,10 +84,10 @@ async::future<void> io_unblock_driver(async::context& p_ctx,
     if (ctx1.done() && ctx2.done()) {
       co_return;
     }
-    if (ctx1.state() == async::blocked_by::io) {
+    if (ctx1.state() == async::blocked_by::signal) {
       ctx1.unblock();
     }
-    if (ctx2.state() == async::blocked_by::io) {
+    if (ctx2.state() == async::blocked_by::signal) {
       ctx2.unblock();
     }
     co_await 1us;
@@ -410,7 +410,7 @@ async::future<void> io_example(async::context& p_ctx) {
     // Start DMA transaction...
 
     while (!dma_complete) {
-        co_await p_ctx.block_by_io();
+        co_await p_ctx.block_by_signal();
     }
     co_return;
 }
@@ -419,7 +419,7 @@ async::future<void> io_example(async::context& p_ctx) {
 Please note that this coroutine has a loop where it continually reports that
 its blocked by IO. It is important that any coroutine blocking by IO check if
 the IO has completed before proceeding. If not, it must
-`co_await ctx.block_by_io();` at some point to give control back to the resumer.
+`co_await ctx.block_by_signal();` at some point to give control back to the resumer.
 
 ### Composing Coroutines
 

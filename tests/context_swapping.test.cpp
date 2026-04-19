@@ -65,11 +65,6 @@ void context_swapping()
     future.resume();
     expect(that % 1 == step);
 
-// Resume routine — it hits co_await on a future whose context was
-// allocated inside the coroutine frame; this is a contract violation
-#if defined(__cpp_contracts)
-    // TODO(kammce): Add violation handler
-#else
     // NOTE: aborts() forks a child process, so a std::set_terminate handler
     // set here cannot be observed from the parent — terminate_was_called would
     // always be false regardless. The aborts() check is the only observable
@@ -78,7 +73,6 @@ void context_swapping()
     expect(that % 1 == step);
     expect(that % not future.done());
     // ctx holds routine's suspended frame while the nested context does work
-#endif
   };
 }
 

@@ -27,15 +27,6 @@ Defined in namespace `async::v0`
 ```{doxygenclass} v0::proxy_context
 ```
 
-## async::exclusive_access
-
-Defined in namespace `async::v0`
-
-*import async_context;*
-
-```{doxygenclass} v0::exclusive_access
-```
-
 ## async::blocked_by
 
 Defined in namespace `async::v0`
@@ -52,4 +43,13 @@ Defined in namespace `async::v0`
 *import async_context;*
 
 ```{doxygenclass} v0::future
+```
+
+## async::mutex
+
+Defined in namespace `async::v0`
+
+*import async_context;*
+
+```{doxygenclass} v0::mutex
 ```

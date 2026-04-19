@@ -17,11 +17,11 @@ void on_upload_test()
     bool unblock_called = false;
     async::context const* unblocked_context = nullptr;
     auto upload_handler =
-      async::unblock_listener::from([&](async::context const& p_context) {
+      async::context_listener::from([&](async::context const& p_context) {
         unblock_called = true;
         unblocked_context = &p_context;
       });
-    ctx.on_unblock(&upload_handler);
+    ctx.set_listener(&upload_handler);
 
     unsigned step = 0;
     auto co = [&step](async::context&) -> async::future<void> {
@@ -62,13 +62,13 @@ void on_upload_test()
     expect(that % future.done());
     expect(that % 1 == step);
 
-    ctx.clear_unblock_listener();
+    ctx.clear_listener();
   };
 
   "on_upload() via inheritance"_test = []() {
     // Setup
     async::inplace_context<1024> ctx;
-    struct un_blocker : public async::unblock_listener
+    struct un_blocker : public async::context_listener
     {
       bool unblock_called = false;
       async::context const* unblocked_context = nullptr;
@@ -81,7 +81,7 @@ void on_upload_test()
     };
 
     un_blocker ub;
-    ctx.on_unblock(&ub);
+    ctx.set_listener(&ub);
 
     unsigned step = 0;
     auto co = [&step](async::context&) -> async::future<void> {
@@ -121,7 +121,7 @@ void on_upload_test()
     expect(that % future.done());
     expect(that % 1 == step);
 
-    ctx.clear_unblock_listener();
+    ctx.clear_listener();
   };
 };
 

@@ -25,7 +25,9 @@ libhal_add_library(async_context
     MODULES
         modules/async_context.cppm
         modules/coroutine.cppm
-        modules/schedulers.cppm)
+        modules/schedulers.cppm
+        modules/sync.cppm
+)
 libhal_apply_compile_options(async_context)
 libhal_install_library(async_context NAMESPACE libhal)
 libhal_add_tests(async_context
@@ -34,9 +36,9 @@ libhal_add_tests(async_context
         basics
         blocked_by
         cancel
-        exclusive_access
+        mutex
         proxy
-        on_unblock
+        context_listener
         simple_scheduler
         clock_adapter
         run_until_done

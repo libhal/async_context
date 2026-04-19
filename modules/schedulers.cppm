@@ -121,11 +121,11 @@ struct scheduled_context
    * the context is time-blocked.
    */
   scheduled_context(async::context& p_ctx,
-                    async::unblock_listener* p_listener,
+                    async::context_listener* p_listener,
                     Clock const& p_clock)
     : ctx(p_ctx)
   {
-    p_ctx.on_unblock(p_listener);
+    p_ctx.set_listener(p_listener);
     refresh(p_clock);
   }
 
@@ -217,7 +217,7 @@ struct scheduled_context
    */
   [[nodiscard]] bool is_ready() const noexcept
   {
-    return ctx.get().state() != blocked_by::io &&
+    return ctx.get().state() != blocked_by::signal &&
            ctx.get().state() != blocked_by::time;
   }
 
@@ -225,7 +225,7 @@ struct scheduled_context
   // this stack frame after run_until_done_impl returns.
   ~scheduled_context()
   {
-    ctx.get().clear_unblock_listener();
+    ctx.get().clear_listener();
   }
 };
 
@@ -247,7 +247,7 @@ template<clock Clock>
 void run_until_done_impl(
   Clock& p_clock,
   std::invocable<typename Clock::time_point> auto&& p_sleep_until,
-  async::unblock_listener* p_listener,
+  async::context_listener* p_listener,
   context_derived auto&... p_tasks)
 {
   using time_point = typename Clock::time_point;
@@ -355,7 +355,7 @@ export template<clock Clock>
 void run_until_done(
   Clock& p_clock,
   std::invocable<typename Clock::time_point> auto&& p_sleep_until,
-  async::unblock_listener&& p_listener,
+  async::context_listener&& p_listener,
   context_derived auto&... p_tasks)
 {
   run_until_done_impl(p_clock,

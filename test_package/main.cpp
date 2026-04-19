@@ -53,7 +53,7 @@ async::future<void> write_actuator(async::context& p_ctx,
                                    int value)
 {
   std::println("['{}': Actuator] Writing {}...", p_name, value);
-  co_await p_ctx.block_by_io();
+  co_await p_ctx.block_by_signal();
   std::println("['{}': Actuator] Write complete!", p_name);
 }
 
@@ -109,10 +109,10 @@ int main()
       if (ctx0.done() and ctx1.done()) {
         break;
       }
-      if (ctx0.state() == async::blocked_by::io) {
+      if (ctx0.state() == async::blocked_by::signal) {
         ctx0.unblock();
       }
-      if (ctx1.state() == async::blocked_by::io) {
+      if (ctx1.state() == async::blocked_by::signal) {
         ctx1.unblock();
       }
       co_await 1us;

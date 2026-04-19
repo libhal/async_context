@@ -69,85 +69,69 @@ constexpr size_t mask = sizeof(stack_word) - 1uz;
  * std::countr_zero(sizeof(stack_word)).
  */
 constexpr size_t shift = std::countr_zero(sizeof(stack_word));
-
 /**
  * @brief Enumeration of blocking states for async operations
  *
- * This enum describes the various states a coroutine can be in when blocked
- * from execution. Each state has different implications for how the scheduler
- * should handle resumption of the coroutine.
+ * Describes what is blocking a coroutine from making forward progress.
+ * Each state carries a distinct contract between the coroutine and the
+ * scheduler regarding who is responsible for the transition back to nothing
+ * and whether resumption is meaningful.
  *
- * The blocking states are ordered from least to most restrictive:
- * - nothing: Ready to run, no blocking
- * - time: Must wait for a specific duration before resuming
- * - io: Blocked by I/O operation that must complete
- * - sync: Blocked by resource contention (mutex, semaphore)
- * - external: Blocked by external coroutine system
+ * The scheduler uses these states for two purposes:
+ *
+ *   1. Deciding which contexts to resume on each scan.
+ *   2. Sleep eligibility — when every managed context is in time, signal,
+ *      or sync states, the scheduler may sleep until the earliest time deadline
+ *      OR set_listener() fires.
  */
 export enum class blocked_by : std::uint8_t {
-  /// Not blocked by anything, ready to run, can be resumed.
+  /// Not blocked by anything, ready to run.
+  ///
+  /// The context has work it can make progress on and should be resumed by
+  /// the scheduler at its earliest opportunity.
   nothing = 0,
 
-  /// Blocked by a time duration that must elapse before resuming.
+  /// Blocked for a duration that must elapse before resuming.
   ///
-  /// Another way of saying this is that the active coroutine is requesting to
-  /// be rescheduled at or after the time duration provided. The sleep time
-  /// provided is the minimum that a scheduler must wait before resuming the
-  /// coroutine. If the coroutine is resumed earlier, then this is erroneous
-  /// behavior. This behavior is clearly wrong, but is well defined. The
-  /// coroutine will resume earlier than it had anticipated, which can cause
-  /// other problems down the line. For example, if a coroutine resets a device
-  /// and must wait 50ms before attempting to communicate with it again. If that
-  /// time isn't upheld, then the code may thrown an exception when the device
-  /// is not online by the time of resumption.
+  /// The scheduler is responsible for the unblock transition for this state. It
+  /// must track the requested duration and call unblock() only after that
+  /// duration has elapsed, after which it may resume the context.
   ///
-  /// This blocked by state is special in that it is not poll-able. Unlike the
-  /// blocked by states below, when a coroutine requests to be rescheduled, the
-  /// scheduler must ensure that the context/future it is bound to is resumed at
-  /// the right time.
+  /// Resuming before the duration elapses is erroneous: it violates the
+  /// timing contract of the coroutine (e.g., device reset windows, bus setup
+  /// times). The resume() method enforces this by returning immediately if
+  /// the context is still in this state.
   time = 1,
 
-  /// Blocked by an I/O operation (DMA, bus transaction, etc.).
-  /// An interrupt or I/O completion will call unblock() when ready.
+  /// Blocked by an asynchronous signal that will arrive externally.
   ///
-  /// This blocked by state is poll-able, meaning that the coroutine may be
-  /// resumed before the context is unblocked.
-  /// Coroutines MUST check that their I/O operations have completed before
-  /// continuing on with their operations. If a coroutine is resumed and their
-  /// I/O operation is still pending, those coroutines should block themselves
-  /// by I/O again to signal to the scheduler that they are not ready yet.
+  /// Something outside the scheduler's control will call unblock() when the
+  /// operation completes. The source may be a hardware interrupt, a
+  /// sender/receiver completion, an epoll callback, a kernel signal, or any
+  /// other external event.
   ///
-  /// A time estimate may be provided to the scheduler to give extra information
-  /// about when to poll or reschedule the context again. The time information
-  /// may be ignored.
-  io = 2,
+  /// The scheduler MUST NOT resume or manually unblock a context in this
+  /// state. It should skip the context during its scan and rely on the
+  /// set_listener() notification to know when the context becomes ready.
+  signal = 2,
 
-  /// Blocked by a resource contention.
+  /// Blocked by resource contention.
   ///
-  /// Examples: mutex, semaphore, two coroutines competing for an I2C bus.
+  /// The coroutine is waiting to acquire a resource currently held by another
+  /// context (e.g., two coroutines competing for an I2C bus). Resuming a
+  /// context in this state is permitted but typically pointless. The
+  /// coroutine will re-check the resource, find it still held, and re-block.
   ///
-  /// If the coroutine is resumed, the coroutine should check that it can
-  /// acquire the resource before assuming that it can. Just like I/O, if the
-  /// coroutine determines that its still blocked by sync, then it must re-block
-  /// itself by sync.
+  /// This state exists primarily for sleep eligibility: a scheduler that sees
+  /// all of its contexts in time, signal, or sync knows that no productive
+  /// work can happen and may sleep rather than busy-loop.
+  ///
+  /// When block_by_sync() is called, the context_listener's on_sync_block()
+  /// callback is invoked with the address of the blocking context. A simple
+  /// scheduler may ignore this and poll sync contexts on each scan. A more
+  /// advanced scheduler may build dependency maps from these callbacks and
+  /// perform targeted wake-ups when the blocker finishes.
   sync = 3,
-
-  /// Blocked by an external coroutine outside the async::context system.
-  ///
-  /// Examples: co_awaiting a std::task, std::generator, or third-party
-  /// coroutine library.
-  ///
-  /// A coroutine invoking a 3rd party async library is considered to be a
-  /// coroutine supervisor. A coroutine supervisor stays as the active coroutine
-  /// on its context, and must manually resume the 3rd party async library until
-  /// it finishes. This is important since the async context scheduler has no
-  /// knowledge of the 3rd party async operation and how it works.
-  ///
-  /// If the external async library has the ability to call unblock() on the
-  /// context, then it should, but is not mandated to do so. Like I/O, this is
-  /// pollable by a scheduler and the coroutine code should block on external if
-  /// the external coroutine is still active.
-  external = 4,
 };
 
 /**
@@ -214,33 +198,6 @@ export struct bad_coroutine_alloc : std::bad_alloc
   context const* violator;
 };
 
-/**
- * @brief Thrown when a coroutine awaits a cancelled future
- *
- * This exception is thrown when a coroutine attempts to await a future that
- * has been cancelled. It indicates that the operation was explicitly cancelled
- * before completion.
- */
-export struct operation_cancelled : public std::exception
-{
-  operation_cancelled(void const* p_future_address)
-    : future_address(p_future_address)
-  {
-  }
-
-  /**
-   * @brief Get exception message
-   *
-   * @return C-string describing the cancellation error
-   */
-  [[nodiscard]] char const* what() const noexcept override
-  {
-    return "This future has been cancelled!";
-  }
-
-  void const* future_address = nullptr;
-};
-
 // =============================================================================
 //
 // Context
@@ -283,40 +240,40 @@ class promise_base;
  * for schedulers to efficiently track which contexts become ready for execution
  * without polling.
  *
- * The `on_unblock()` method is called from within `context::unblock()`, which
+ * The `set_listener()` method is called from within `context::unblock()`, which
  * may be invoked from an ISR, a driver completion handler, or another thread.
  * Implementations MUST be ISR-safe and noexcept. Avoid any operations that
  * could block, allocate memory, or acquire non-ISR-safe locks within
- * `on_unblock()`.
+ * `set_listener()`.
  *
  * Typical usage is through `context_handle`, which automatically registers and
  * deregisters the listener on construction and destruction respectively.
- * Direct registration is possible via `context::on_unblock()` but requires
+ * Direct registration is possible via `context::set_listener()` but requires
  * manual lifetime management — the listener MUST outlive the context it is
  * registered with.
  *
  * Example implementation:
  * @code
- * class my_scheduler : public async::unblock_listener {
+ * class my_scheduler : public async::context_listener {
  * private:
- *   void on_unblock(async::context& p_context) noexcept override {
+ *   void set_listener(async::context& p_context) noexcept override {
  *     m_ready_queue.push(&p_context);
  *   }
  *   // ...
  * };
  * @endcode
  */
-export struct unblock_listener
+export struct context_listener
 {
 public:
   template<typename Callable>
-  static auto from(Callable&& p_handler)
+  static auto from(Callable&& p_unblock_handler)
   {
-    struct lambda_unblock_listener : public unblock_listener
+    struct lambda_context_listener : public context_listener
     {
       Callable handler;
 
-      lambda_unblock_listener(Callable&& p_handler)
+      lambda_context_listener(Callable&& p_handler)
         : handler(std::move(p_handler))
       {
       }
@@ -328,10 +285,10 @@ public:
       }
     };
 
-    return lambda_unblock_listener{ std::forward<Callable>(p_handler) };
+    return lambda_context_listener{ std::forward<Callable>(p_unblock_handler) };
   }
 
-  virtual ~unblock_listener() = default;
+  virtual ~context_listener() = default;
 
 private:
   friend class context;
@@ -351,7 +308,27 @@ private:
    * @note This method MUST be noexcept and ISR-safe. It may be called from
    * any execution context including interrupt handlers.
    */
-  virtual void on_unblock(context& p_context) noexcept = 0;
+  virtual void on_unblock(context& p_context) noexcept
+  {
+    std::ignore = p_context;
+  }
+
+  /**
+   * @brief Called when a context is blocked waiting for a synchronized resource
+   *
+   * This callback is invoked when a context becomes blocked because another
+   * context currently owns the resource it needs.
+   *
+   * @param p_blocked - the context that is waiting for access to the resource
+   * @param p_blocker - the address of the context that has control over the
+   * resource that p_blocked needs.
+   */
+  virtual void on_sync_block(context& p_blocked,
+                             context const& p_blocker) noexcept
+  {
+    std::ignore = p_blocked;
+    std::ignore = p_blocker;
+  }
 };
 
 /**
@@ -413,52 +390,24 @@ public:
   context& operator=(context const&) = delete;
 
   /**
-   * @brief Move constructor
+   * @brief Delete move constructor
    *
-   * Transfers ownership of stack and state from the source context. The
-   * moved-from context is reset to its default state (no stack, no active
-   * operations).
-   *
-   * @param p_other The context to move from (will be reset to default state)
+   * Contexts cannot be moved because the member variable m_stack_pointer's
+   * address is stored within the context stack memory. Because moving the
+   * object would cause the pointers within the stack to dangle, move is
+   * deleted.
    */
-  context(context&& p_other) noexcept
-    : m_active_handle(std::exchange(p_other.m_active_handle, noop_sentinel))
-    , m_stack_pointer(std::exchange(p_other.m_stack_pointer, nullptr))
-    , m_stack(std::exchange(p_other.m_stack, {}))
-    , m_original(std::exchange(p_other.m_original, nullptr))
-    , m_listener(std::exchange(p_other.m_listener, nullptr))
-    , m_sleep_time(std::exchange(p_other.m_sleep_time, sleep_duration::zero()))
-    , m_sync_blocker(std::exchange(p_other.m_sync_blocker, nullptr))
-    , m_state(std::exchange(p_other.m_state, blocked_by::nothing))
-  {
-  }
+  context(context&& p_other) noexcept = delete;
 
   /**
-   * @brief Move assignment operator
+   * @brief Delete move assignment operator
    *
-   * Transfers ownership of stack and state from the source context. The
-   * current context is cancelled before assignment, and the moved-from context
-   * is reset to its default state.
-   *
-   * @param p_other The context to move from (will be reset to default state)
-   * @return Reference to this context
+   * Contexts cannot be moved because the member variable m_stack_pointer's
+   * address is stored within the context stack memory. Because moving the
+   * object would cause the pointers within the stack to dangle, move is
+   * deleted.
    */
-  context& operator=(context&& p_other) noexcept
-  {
-    if (this != &p_other) {
-      cancel();
-      m_active_handle = std::exchange(p_other.m_active_handle, noop_sentinel);
-      m_stack_pointer = std::exchange(p_other.m_stack_pointer, nullptr);
-      m_stack = std::exchange(p_other.m_stack, {});
-      m_original = std::exchange(p_other.m_original, nullptr);
-      m_listener = std::exchange(p_other.m_listener, nullptr);
-      m_sleep_time =
-        std::exchange(p_other.m_sleep_time, sleep_duration::zero());
-      m_sync_blocker = std::exchange(p_other.m_sync_blocker, nullptr);
-      m_state = std::exchange(p_other.m_state, blocked_by::nothing);
-    }
-    return *this;
-  }
+  context& operator=(context&& p_other) noexcept = delete;
 
   /**
    * @brief Initialize stack memory for the context
@@ -485,6 +434,7 @@ public:
    */
   constexpr void initialize_stack_memory(std::span<stack_word> p_stack_memory)
   {
+    cancel();
     m_stack = p_stack_memory;
     m_stack_pointer = m_stack.data();
   }
@@ -498,7 +448,6 @@ public:
   {
     get_original().m_state = blocked_by::nothing;
     get_original().m_sleep_time = sleep_duration::zero();
-    get_original().m_sync_blocker = nullptr;
   }
 
   /**
@@ -549,6 +498,17 @@ public:
   }
 
   /**
+   * @brief Signature for an io setup function
+   *
+   * This function accepts no arguments and takes no inputs. This function is
+   * expected to setup I/O and kick off the I/O operation. The I/O operation
+   * must be capable of asynchronously unblocking a context via an ISR or
+   * other mechanism.
+   *
+   */
+  using io_setup = void();
+
+  /**
    * @brief Blocks the context for an I/O operation
    *
    * This method blocks the current coroutine until an I/O operation completes.
@@ -558,11 +518,31 @@ public:
    *                   the context again. The scheduler may ignore this hint.
    * @return std::suspend_always to suspend the coroutine until resumed
    */
-  constexpr std::suspend_always block_by_io(
+  constexpr std::suspend_always block_by_signal(
+    std::invocable<io_setup> auto p_setup,
     sleep_duration p_duration = default_timeout) noexcept
   {
-    get_original().m_state = blocked_by::io;
+    block_by_signal(p_duration);
+    p_setup();
+    return {};
+  }
+
+  /**
+   * @brief Blocks the context for an I/O operation
+   *
+   * This method blocks the current coroutine until an I/O operation completes.
+   * The context can be resumed by calling unblock() when the I/O is ready.
+   *
+   * @param p_duration Optional time estimate for when to poll or reschedule
+   *                   the context again. The scheduler may ignore this hint.
+   * @return std::suspend_always to suspend the coroutine until resumed
+   */
+  constexpr std::suspend_always block_by_signal(
+    sleep_duration p_duration = default_timeout) noexcept
+  {
+    get_original().m_state = blocked_by::signal;
     get_original().m_sleep_time = p_duration;
+
     return {};
   }
 
@@ -576,32 +556,16 @@ public:
    * anything, unblock and resume any of those context to have them acquire
    * access over the bus.
    *
-   * @param p_blocker Pointer to the context that is currently blocking this one
    * @return std::suspend_always to suspend the coroutine until resumed
    */
-  constexpr std::suspend_always block_by_sync(context* p_blocker) noexcept
+  constexpr std::suspend_always block_by_sync(context const& p_blocker) noexcept
   {
     get_original().m_state = blocked_by::sync;
-    get_original().m_sync_blocker = p_blocker;
+    if (m_listener != nullptr) {
+      m_listener->on_sync_block(*this, p_blocker);
+    }
     return {};
   }
-
-  /**
-   * @brief Blocks the context by an external coroutine system
-   *
-   * This method blocks the current coroutine when it's awaiting an operation
-   * from an external coroutine library (e.g., std::task, std::generator). The
-   * coroutine is considered a supervising coroutine. The coroutine may be
-   * resumed while blocked by external.
-   *
-   * @return std::suspend_always to suspend the coroutine until resumed
-   */
-  constexpr std::suspend_always block_by_external() noexcept
-  {
-    get_original().m_state = blocked_by::external;
-    return {};
-  }
-
   /**
    * @brief Get the current active coroutine handle
    *
@@ -627,9 +591,12 @@ public:
    *
    * @return blocked_by enum value indicating the current blocking state
    */
-  [[nodiscard]] constexpr auto state() const noexcept
+  [[nodiscard]] constexpr blocked_by state() const noexcept
   {
-    return get_original().m_state;
+    if (m_awaited_context == nullptr) [[likely]] {
+      return get_original().m_state;
+    }
+    return m_awaited_context->state();
   }
 
   /**
@@ -650,26 +617,40 @@ public:
   /**
    * @brief Cancel all operations on this context
    *
-   * This method cancels all pending operations on this context.
+   * After cancellation, the state is `blocked_by::nothing`, the active
+   * coroutine becomes the noop_sentinel and the stack memory is clear of any
+   * living objects.
+   *
+   * This function must only be called when the coroutine is suspended.
+   * A context may be cancelled when it is blocked.
    */
   void cancel();
 
   /**
-   * @brief Resume the active coroutine on this context
+   * @brief Resume the active coroutine on this context or do nothing if blocked
    *
-   * This method resumes the currently active coroutine. It only has an effect
-   * if the context is not blocked by time, as time-blocking contexts must wait
-   * for their designated duration to elapse.
+   * This function  resumes the currently active coroutine if the context is
+   * blocked by nothing. It only has an effect if the context is not blocked by
+   * time, as time-blocking contexts must wait for their designated duration to
+   * elapse.
    */
   void resume()
   {
-    // We cannot resume the a coroutine blocked by time. Only the scheduler can
-    // unblock a context state.
-    //
-    // This needs to be here to ensure that sync_wait is possible, otherwise the
-    // blocked_by::time semantic cannot be supported.
-    if (state() != blocked_by::time) {
+    if (state() == blocked_by::nothing) [[likely]] {
       m_active_handle.resume();
+    } else if (m_awaited_context != nullptr) {
+      // This context is awaiting another context, check if its done
+      if (m_awaited_context->done()) {
+        m_awaited_context = nullptr;
+        unblock_without_notification();
+        m_active_handle.resume();
+      } else {
+        // If the context is not done, resume the awaited context
+        m_awaited_context->resume();
+        // INFO: The call above can be recursive if the awaited context is also
+        // awaiting another context. This can occur all the way down until the
+        // final leaf context is resumed. We expect such cases to be rare.
+      }
     }
   }
 
@@ -692,8 +673,6 @@ public:
   void sync_wait(std::invocable<sleep_duration> auto&& p_delay)
   {
     while (not done()) {
-      resume();
-
       if (state() == blocked_by::time) {
         if (auto delay_time = sleep_time();
             delay_time > sleep_duration::zero()) {
@@ -701,6 +680,7 @@ public:
         }
         unblock_without_notification();
       }
+      resume();
     }
   }
 
@@ -761,11 +741,14 @@ public:
    */
   [[nodiscard]] constexpr sleep_duration sleep_time() const noexcept
   {
+    if (m_awaited_context != nullptr) [[unlikely]] {
+      return m_awaited_context->sleep_time();
+    }
     return get_original().m_sleep_time;
   }
 
   /**
-   * @brief Sets the unblock listener
+   * @brief Set the context listener
    *
    * There can only be a single unblock listener per context, thus any
    * previously set unblock listener will be removed.
@@ -773,48 +756,31 @@ public:
    * Because this API takes the address of the listener, it is important that
    * the context outlive the listener.
    *
-   * `remove_unblock_handler()` must be called before the end of the lifetime of
+   * `clear_listener()` must be called before the end of the lifetime of
    * the `p_listener` object. It is undefined behavior to allow a listener to be
    * destroyed before it is removed from this context.
    *
    * @param p_listener - the address of the unblock listener to be invoked when
    * this context is unblocked. A nullptr may be passed to this parameter. It
-   * has the same effect as calling `clear_unblock_listener()`.
+   * has the same effect as calling `clear_listener()`.
    */
-  void on_unblock(unblock_listener* p_listener)
+  void set_listener(context_listener* p_listener)
   {
     get_original().m_listener = p_listener;
   }
 
   /**
-   * @brief Clears the on_unblock listener from this context
+   * @brief Clears the listener from this context
    *
    * After this is called, any call to `unblock()` will not invoke an unblock
    * listener.
    *
-   * It is the responsibility of the application to clear the unblock listener
-   * is cleared, before the end of the lifetime of the object that was passed to
-   * on_unblock().
+   * The application must clear the listener before the object passed to
+   * set_listener() is destroyed.
    */
-  void clear_unblock_listener() noexcept
+  void clear_listener() noexcept
   {
     get_original().m_listener = nullptr;
-  }
-
-  /**
-   * @brief Get the address of the context currently blocking this one blocking
-   *
-   * If this context's state is `blocked_by::sync` then there is a context that
-   * currently holds a resource that this context needs. That context's address
-   * can be acquired by this API.
-   *
-   * @returns context const* - returns a const pointer to the other context that
-   * is blocking this context. If no such context exists, then a nullptr is
-   * returned.
-   */
-  [[nodiscard]] context const* get_blocker() const
-  {
-    return get_original().m_sync_blocker;
   }
 
   ~context()
@@ -927,9 +893,9 @@ private:
   stack_word* m_stack_pointer = nullptr;                    // word 2
   std::span<stack_word> m_stack{};                          // word 3-4
   context* m_original = nullptr;                            // word 5
-  unblock_listener* m_listener = nullptr;                   // word 6
+  context_listener* m_listener = nullptr;                   // word 6
   sleep_duration m_sleep_time = sleep_duration::zero();     // word 7
-  context* m_sync_blocker = nullptr;                        // word 8
+  context* m_awaited_context = nullptr;                     // word 8
   blocked_by m_state = blocked_by::nothing;                 // word 9: pad 3
 };
 
@@ -1088,237 +1054,6 @@ private:
   alignas(std::max_align_t) std::array<stack_word, StackSizeInWords> m_stack{};
 };
 
-/**
- * @brief A RAII-style guard for exclusive access to a context
- *
- * The exclusive_access class provides a mechanism for managing exclusive
- * access to a context, particularly in scenarios involving synchronization
- * primitives like mutexes or semaphores. It ensures proper cleanup and
- * unblocking when the guard goes out of scope.
- *
- * This is particularly useful for implementing resource management in
- * coroutine-based systems where proper cleanup and blocking state
- * transitions are required.
- */
-export class exclusive_access
-{
-public:
-  /**
-   * @brief Default constructor for exclusive_access
-   *
-   * Creates an uninitialized exclusive_access guard.
-   */
-  constexpr exclusive_access() = default;
-
-  /**
-   * @brief Constructor that captures a context for exclusive access
-   *
-   * @param p_capture The context to capture for exclusive access
-   */
-  constexpr exclusive_access(context& p_capture) noexcept
-    : m_context_address(&p_capture)
-  {
-  }
-
-  /**
-   * @brief Assignment operator to capture a new context
-   *
-   * @param p_capture The context to capture for exclusive access
-   * @return Reference to this exclusive_access instance
-   */
-  constexpr exclusive_access& operator=(context& p_capture) noexcept
-  {
-    m_context_address = &p_capture;
-    return *this;
-  }
-
-  /**
-   * @brief Assignment operator to clear the context capture
-   *
-   * @param p_capture nullptr to clear the capture
-   * @return Reference to this exclusive_access instance
-   */
-  constexpr exclusive_access& operator=(nullptr_t) noexcept
-  {
-    m_context_address = nullptr;
-    return *this;
-  }
-
-  /**
-   * @brief Copy constructor for exclusive_access
-   *
-   * @param p_capture The exclusive_access instance to copy from
-   */
-  constexpr exclusive_access(exclusive_access const& p_capture) noexcept =
-    default;
-
-  /**
-   * @brief Copy assignment operator for exclusive_access
-   *
-   * @param p_capture The exclusive_access instance to copy from
-   * @return Reference to this exclusive_access instance
-   */
-  constexpr exclusive_access& operator=(
-    exclusive_access const& p_capture) noexcept = default;
-
-  /**
-   * @brief Move constructor for exclusive_access
-   *
-   * @param p_capture The exclusive_access instance to move from
-   */
-  constexpr exclusive_access(exclusive_access&& p_capture) noexcept = default;
-
-  /**
-   * @brief Move assignment operator for exclusive_access
-   *
-   * @param p_capture The exclusive_access instance to move from
-   * @return Reference to this exclusive_access instance
-   */
-  constexpr exclusive_access& operator=(exclusive_access& p_capture) noexcept =
-    default;
-
-  /**
-   * @brief Equality operator to check if this guard holds a specific context
-   *
-   * @param p_context The context to compare against
-   * @return true if this guard holds the specified context, false otherwise
-   */
-  constexpr bool operator==(context& p_context) noexcept
-  {
-    return m_context_address == &p_context;
-  }
-
-  /**
-   * @brief Check if this guard is currently holding a context
-   *
-   * @return true if the guard has an active context, false otherwise
-   */
-  [[nodiscard]] constexpr bool in_use() const noexcept
-  {
-    return m_context_address != nullptr;
-  }
-
-  /**
-   * @brief Check if this guard has an active context (bool conversion)
-   *
-   * This operator provides a way to check if the guard is currently active.
-   *
-   * @return true if the guard has an active context, false otherwise
-   */
-  [[nodiscard]] auto address() const noexcept
-  {
-    return m_context_address != nullptr;
-  }
-
-  /**
-   * @brief Convert to bool (check if in use)
-   *
-   * This operator provides a way to check if the guard is currently active.
-   *
-   * @return true if the guard has an active context, false otherwise
-   */
-  [[nodiscard]] constexpr operator bool() const noexcept
-  {
-    return in_use();
-  }
-
-  /**
-   * @brief Set this guard as a blocking state for synchronization
-   *
-   * This method sets the specified context to be blocked by synchronization,
-   * effectively creating a dependency between contexts.
-   *
-   * @param p_capture The context to set as blocking by sync
-   * @return std::suspend_always to suspend the coroutine until resumed
-   */
-  constexpr std::suspend_always set_as_block_by_sync(context& p_capture)
-  {
-    if (in_use()) {
-      p_capture.block_by_sync(m_context_address);
-    }
-    return {};
-  }
-
-  /**
-   * @brief Unblocks the associated context and clears this guard
-   *
-   * This method unblocks the context that was captured by this guard and
-   * clears the guard's reference to it.
-   */
-  constexpr void unblock_and_clear() noexcept
-  {
-    if (in_use()) {
-      m_context_address->unblock();
-      m_context_address = nullptr;
-    }
-  }
-
-private:
-  /**
-   * @brief The address of the context being held, or nullptr if not in use
-   */
-  context* m_context_address = nullptr;
-};
-
-/**
- * @brief I/O operation descriptor for async operations
- *
- * The io struct provides a way to describe I/O operations that can be awaited.
- * It contains information about the expected duration for I/O completion,
- * which can be used by schedulers to determine when to poll or reschedule
- * coroutines waiting for I/O operations.
- */
-export struct io
-{
-  /**
-   * @brief Construct an io descriptor with a specified duration
-   *
-   * @param p_duration The expected duration for I/O completion (default: 0)
-   */
-  io(sleep_duration p_duration = sleep_duration{ 0u })
-    : m_duration(p_duration)
-  {
-  }
-
-  /**
-   * @brief The expected duration for I/O completion
-   *
-   * This field represents the estimated time for an I/O operation to complete.
-   * It can be used by schedulers to determine appropriate polling intervals
-   * or scheduling decisions.
-   */
-  sleep_duration m_duration;
-};
-
-/**
- * @brief Synchronization operation descriptor for async operations
- *
- * The sync struct provides a way to describe synchronization operations that
- * can be awaited. It contains a reference to an exclusive_access guard,
- * which is used to manage resource contention in coroutine-based systems.
- */
-export struct sync
-{
-  /**
-   * @brief Construct a sync descriptor with an exclusive access guard
-   *
-   * @param p_context The exclusive access guard that describes the sync
-   * operation
-   */
-  sync(exclusive_access p_context)
-    : m_context(p_context)
-  {
-  }
-
-  /**
-   * @brief The exclusive access guard for this synchronization operation
-   *
-   * This field holds the exclusive access information that describes the
-   * synchronization resource being waited for.
-   */
-  exclusive_access m_context;
-};
-
 // =============================================================================
 //
 // Promise Base
@@ -1467,7 +1202,7 @@ public:
    */
   constexpr std::suspend_always await_transform() noexcept
   {
-    return m_context->block_by_io();
+    return m_context->block_by_signal();
   }
 
   /**
@@ -1832,6 +1567,39 @@ public:
   using handle_type = std::coroutine_handle<>;
   using full_handle_type = std::coroutine_handle<promise_type>;
 
+  /**
+   * @brief Thrown when a future is in the cancelled state and has been awaited
+   * on
+   *
+   * This exception is thrown when a cancelled future is awaited. A future can
+   * be in the cancelled state if its coroutine promise was destroyed.
+   *
+   * In general, normal usage of async context should never result in this
+   * exception being thrown. In order for this to be seen, a future would need
+   * to be created and then cancelled, then awaited on. This does not occur if a
+   * future is awaited and then the context is cancelled.
+   *
+   */
+  struct cancelled : public std::exception
+  {
+    cancelled(void const* p_future_address)
+      : future_address(p_future_address)
+    {
+    }
+
+    /**
+     * @brief Get exception message
+     *
+     * @return C-string describing the cancellation error
+     */
+    [[nodiscard]] char const* what() const noexcept override
+    {
+      return "This future has been cancelled!";
+    }
+
+    void const* future_address = nullptr;
+  };
+
   future(future const& p_other) = delete;
   future& operator=(future const& p_other) = delete;
 
@@ -1934,7 +1702,7 @@ public:
     }
   }
 
-  constexpr bool cancelled()
+  constexpr bool is_cancelled()
   {
     return std::holds_alternative<cancelled_state>(m_state);
   }
@@ -2047,18 +1815,18 @@ public:
       return std::get<handle_type>(m_operation.m_state);
     }
 
-    [[nodiscard]] constexpr monostate_or<T>& await_resume() const
+    [[nodiscard]] constexpr monostate_or<T>&& await_resume() const
       requires(not std::is_void_v<T>)
     {
       if (std::holds_alternative<T>(m_operation.m_state)) [[likely]] {
-        return std::get<T>(m_operation.m_state);
+        return std::move(std::get<T>(m_operation.m_state));
       } else if (std::holds_alternative<std::exception_ptr>(
                    m_operation.m_state)) [[unlikely]] {
         std::rethrow_exception(
           std::get<std::exception_ptr>(m_operation.m_state));
       } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
         [[unlikely]] {
-        throw operation_cancelled{ &m_operation };
+        throw ::async::future<T>::cancelled{ &m_operation };
       }
 
       // In the event that this coroutine awaiting this awaitable has
@@ -2085,7 +1853,7 @@ public:
           std::get<std::exception_ptr>(m_operation.m_state));
       } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
         [[unlikely]] {
-        throw operation_cancelled{ &m_operation };
+        throw ::async::future<T>::cancelled{ &m_operation };
       }
 
       // In the event that this coroutine awaiting this awaitable has
