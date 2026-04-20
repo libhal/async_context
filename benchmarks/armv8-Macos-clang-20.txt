@@ -1,0 +1,23 @@
+Unable to determine clock rate from sysctl: hw.cpufrequency: No such file or directory
+This does not affect benchmark measurements, only the metadata output.
+***WARNING*** Failed to set thread affinity. Estimated CPU frequency may be incorrect.
+2026-04-19T20:39:17-07:00
+Running ./build/armv8-Macos-clang-20/Release/benchmark
+Run on (10 X 24 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB
+  L1 Instruction 128 KiB
+  L2 Unified 4096 KiB (x10)
+Load Average: 2.28, 2.58, 2.87
+----------------------------------------------------------------------------------
+Benchmark                                        Time             CPU   Iterations
+----------------------------------------------------------------------------------
+bm_function_pointer_call                      2.18 ns         2.18 ns    321788778
+bm_virtual_call                               2.19 ns         2.19 ns    320281115
+bm_virtual_call_variant                       3.11 ns         3.10 ns    225398553
+bm_future_sync_return                         4.11 ns         4.07 ns    172938999
+bm_future_coroutine                           26.5 ns         26.5 ns     26412802
+bm_future_sync_await                          19.8 ns         19.7 ns     35554653
+bm_future_mixed                               11.0 ns         11.0 ns     63749374
+bm_future_void_coroutine                      28.1 ns         28.1 ns     24933659
+bm_future_void_coroutine_context_resume       26.9 ns         26.9 ns     26055431

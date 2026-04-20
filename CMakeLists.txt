@@ -43,7 +43,7 @@ libhal_add_tests(async_context
         clock_adapter
         run_until_done
         async_stacking
-        context_swapping
+        cross_context_await
 
     MODULES
         tests/util.cppm

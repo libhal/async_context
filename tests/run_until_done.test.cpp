@@ -108,6 +108,29 @@ void run_sleep_task_test()
     std::vector<async::context*> unblocked_contexts;
     std::mutex unblocked_mutex;
 
+    struct listener : public async::context_listener
+    {
+      std::vector<async::context*>& unblocked_list;
+      std::mutex& unblocked_mutex;
+
+      listener(std::vector<async::context*>& p_unblocked_list,
+               std::mutex& p_unblocked_mutex)
+        : unblocked_list(p_unblocked_list)
+        , unblocked_mutex(p_unblocked_mutex)
+      {
+      }
+
+      void on_unblock(async::context& p_context) noexcept override
+      {
+        if (p_context.state() == async::blocked_by::signal) {
+          std::lock_guard lock(unblocked_mutex);
+          unblocked_list.push_back(&p_context);
+        }
+      }
+    };
+
+    listener listen{ unblocked_contexts, unblocked_mutex };
+
     // Exercise
     async::run_until_done(
       clk,
@@ -118,12 +141,7 @@ void run_sleep_task_test()
         std::println("Sleeping for {}", p_wake_time - clk.now());
         std::this_thread::sleep_until(p_wake_time);
       },
-      async::context_listener::from([&](async::context& p_ctx) noexcept {
-        if (p_ctx.state() == async::blocked_by::signal) {
-          std::lock_guard lock(unblocked_mutex);
-          unblocked_contexts.push_back(&p_ctx);
-        }
-      }),
+      std::move(listen),
       // List of tasks
       ctx0,
       ctx1,

@@ -240,54 +240,18 @@ class promise_base;
  * for schedulers to efficiently track which contexts become ready for execution
  * without polling.
  *
- * The `set_listener()` method is called from within `context::unblock()`, which
- * may be invoked from an ISR, a driver completion handler, or another thread.
- * Implementations MUST be ISR-safe and noexcept. Avoid any operations that
- * could block, allocate memory, or acquire non-ISR-safe locks within
- * `set_listener()`.
+ * The implementation of `on_unblock()` may be called an interrupt service
+ * routine thus it must be noexcept and interrupt service routine safe. Avoid
+ * any operations that could block, allocate memory, or acquire non-ISR-safe
+ * locks within `on_unblock()`.
  *
- * Typical usage is through `context_handle`, which automatically registers and
- * deregisters the listener on construction and destruction respectively.
- * Direct registration is possible via `context::set_listener()` but requires
- * manual lifetime management — the listener MUST outlive the context it is
- * registered with.
- *
- * Example implementation:
- * @code
- * class my_scheduler : public async::context_listener {
- * private:
- *   void set_listener(async::context& p_context) noexcept override {
- *     m_ready_queue.push(&p_context);
- *   }
- *   // ...
- * };
- * @endcode
+ * `on_sync_block()` communicates to the scheduler that one context is blocked
+ * by another context, allowing the scheduler to decide how it wants to schedule
+ * the context.
  */
 export struct context_listener
 {
 public:
-  template<typename Callable>
-  static auto from(Callable&& p_unblock_handler)
-  {
-    struct lambda_context_listener : public context_listener
-    {
-      Callable handler;
-
-      lambda_context_listener(Callable&& p_handler)
-        : handler(std::move(p_handler))
-      {
-      }
-
-    private:
-      void on_unblock(async::context& p_context) noexcept override
-      {
-        handler(p_context);
-      }
-    };
-
-    return lambda_context_listener{ std::forward<Callable>(p_unblock_handler) };
-  }
-
   virtual ~context_listener() = default;
 
 private:
@@ -298,7 +262,7 @@ private:
    *
    * This method is invoked by `context::unblock()` immediately after the
    * context's state is set to `blocked_by::nothing`. It signals to the
-   * implementing scheduler that the context is now ready to be resumed.
+   * scheduler that the context is now ready to be resumed.
    *
    * @param p_context The context that has just been unblocked. The context's
    * state will be `blocked_by::nothing` at the time of this call. The
@@ -636,18 +600,18 @@ public:
    */
   void resume()
   {
-    if (state() == blocked_by::nothing) [[likely]] {
+    if (m_awaited_context == nullptr and
+        get_original().m_state == blocked_by::nothing) [[likely]] {
       m_active_handle.resume();
     } else if (m_awaited_context != nullptr) {
       // This context is awaiting another context, check if its done
       if (m_awaited_context->done()) {
         m_awaited_context = nullptr;
-        unblock_without_notification();
         m_active_handle.resume();
       } else {
         // If the context is not done, resume the awaited context
         m_awaited_context->resume();
-        // INFO: The call above can be recursive if the awaited context is also
+        // NOTE: The call above can be recursive if the awaited context is also
         // awaiting another context. This can occur all the way down until the
         // final leaf context is resumed. We expect such cases to be rare.
       }
@@ -794,6 +758,9 @@ private:
   friend class promise_base;
   friend class proxy_context;
 
+  template<typename T>
+  friend class future;
+
   /**
    * @brief Check if this is a proxy context
    *
@@ -892,11 +859,13 @@ private:
   std::coroutine_handle<> m_active_handle = noop_sentinel;  // word 1
   stack_word* m_stack_pointer = nullptr;                    // word 2
   std::span<stack_word> m_stack{};                          // word 3-4
-  context* m_original = nullptr;                            // word 5
-  context_listener* m_listener = nullptr;                   // word 6
-  sleep_duration m_sleep_time = sleep_duration::zero();     // word 7
-  context* m_awaited_context = nullptr;                     // word 8
-  blocked_by m_state = blocked_by::nothing;                 // word 9: pad 3
+  context_listener* m_listener = nullptr;                   // word 5
+  context* m_original = nullptr;                            // word 6
+  context* m_awaited_context = nullptr;                     // word 7
+  context* m_awaiting_caller = nullptr;                     // word 8
+  // ---- Members below are below word length ---
+  sleep_duration m_sleep_time = sleep_duration::zero();  // 4B (uint32_t)
+  blocked_by m_state = blocked_by::nothing;              // 1B (uint8_t)
 };
 
 /**
@@ -1810,9 +1779,18 @@ public:
       [[maybe_unused]] std::coroutine_handle<promise<U>>
         p_calling_coroutine) noexcept
     {
-      // This will not throw because the discriminate check was performed in
-      // `await_ready()`.
-      return std::get<handle_type>(m_operation.m_state);
+      auto handle = std::get<handle_type>(m_operation.m_state);
+      auto& calling_ctx = p_calling_coroutine.promise().get_context();
+      auto& awaited_ctx = full_handle_type::from_address(handle.address())
+                            .promise()
+                            .get_context();
+
+      if (&calling_ctx != &awaited_ctx) [[unlikely]] {
+        calling_ctx.m_awaited_context = &awaited_ctx;
+        awaited_ctx.m_awaiting_caller = &calling_ctx;
+      }
+
+      return handle;
     }
 
     [[nodiscard]] constexpr monostate_or<T>&& await_resume() const
@@ -1961,6 +1939,14 @@ constexpr future<T> promise<T>::get_return_object() noexcept
  *
  * This method cancels all pending operations on the context.
  *
+ * A context awaiting this context will be disconnected from this context.
+ * Meaning, if the context awaiting this context, when resumed will resume where
+ * it left off. If a future with this context was awaited and was completed with
+ * a value, then resuming the awaiting context will operate as normal. If the
+ * future was cancelled before completing with a value or error, then resuming
+ * the context and exiting the awaitable will result in the
+ * `async::future::cancelled` exception type being throw.
+ *
  * @note This method is called internally by the context destructor to ensure
  * proper cleanup of all pending asynchronous operations.
  */
@@ -1970,6 +1956,11 @@ void context::cancel()
     std::coroutine_handle<promise_base>::from_address(m_active_handle.address())
       .promise()
       .cancel();
+  }
+
+  if (m_awaiting_caller != nullptr) {
+    m_awaiting_caller->m_awaited_context = nullptr;
+    m_awaiting_caller = nullptr;
   }
 }
 }  // namespace async::inline v0
