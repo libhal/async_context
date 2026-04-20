@@ -15,6 +15,7 @@ void context()
   "sync_wait --> future<int>"_test = []() {
     // Setup
     async::inplace_context<stack_size> ctx;
+    auto const expected_starting_capacity = ctx.capacity();
 
     auto future = [](async::context&) -> async::future<int> {
       co_return 5;
@@ -29,12 +30,13 @@ void context()
     expect(that % future.done());
     expect(that % future.has_value());
     expect(that % 5 == future.value());
-    expect(that % stack_size == ctx.capacity());
+    expect(that % expected_starting_capacity == ctx.capacity());
   };
 
   "co_await coroutine"_test = []() {
     // Setup
     async::inplace_context<stack_size> ctx;
+    auto const expected_starting_capacity = ctx.capacity();
 
     static constexpr int expected_return_value = 1413;
     unsigned step = 0;
@@ -80,12 +82,13 @@ void context()
     expect(that % expected_return_value == future.value());
     expect(that % 4 == step);
 
-    expect(that % stack_size == ctx.capacity());
+    expect(that % expected_starting_capacity == ctx.capacity());
   };
 
   "co_await coroutine"_test = []() {
     // Setup
     async::inplace_context<stack_size> ctx;
+    auto const expected_starting_capacity = ctx.capacity();
 
     static constexpr int return_value1 = 1413;
     static constexpr int return_value2 = 4324;
@@ -122,12 +125,13 @@ void context()
     expect(that % expected_total == future.value());
     expect(that % 2 == step);
 
-    expect(that % stack_size == ctx.capacity());
+    expect(that % expected_starting_capacity == ctx.capacity());
   };
 
   "co_await Xms + sync_wait"_test = []() {
     // Setup
     async::inplace_context<stack_size> ctx;
+    auto const expected_starting_capacity = ctx.capacity();
 
     static constexpr int return_value1 = 1413;
     static constexpr int return_value2 = 4324;
@@ -166,7 +170,7 @@ void context()
     expect(that % sleep_cycles ==
            std::vector<async::sleep_duration>{ 44ms, 100ms, 50ms });
 
-    expect(that % stack_size == ctx.capacity());
+    expect(that % expected_starting_capacity == ctx.capacity());
   };
 };
 

@@ -399,8 +399,13 @@ public:
   constexpr void initialize_stack_memory(std::span<stack_word> p_stack_memory)
   {
     cancel();
-    m_stack = p_stack_memory;
-    m_stack_pointer = m_stack.data();
+
+    // NOTE: subtract 1 because we use the end of the stack for holding the
+    //       length of the stack.
+    auto const capacity = p_stack_memory.size() - 1uz;
+    p_stack_memory.back() = capacity;
+    m_stack_pointer = &p_stack_memory.front();
+    m_stack_end = &p_stack_memory.back();
   }
 
   /**
@@ -649,19 +654,6 @@ public:
   }
 
   /**
-   * @brief Get the amount of stack memory used by active coroutines
-   *
-   * This method returns how much stack space has been consumed by currently
-   * active coroutines.
-   *
-   * @return The number of `stack_word` sized words used in the stack
-   */
-  [[nodiscard]] constexpr auto memory_used() const noexcept
-  {
-    return m_stack_pointer - m_stack.data();
-  }
-
-  /**
    * @brief Get the total capacity of the stack memory
    *
    * This method returns the total size of the stack buffer in stack_word
@@ -671,7 +663,7 @@ public:
    */
   [[nodiscard]] constexpr auto capacity() const noexcept
   {
-    return m_stack.size();
+    return *m_stack_end;
   }
 
   /**
@@ -684,7 +676,20 @@ public:
    */
   [[nodiscard]] constexpr auto memory_remaining() const noexcept
   {
-    return capacity() - memory_used();
+    return m_stack_end - m_stack_pointer;
+  }
+
+  /**
+   * @brief Get the amount of stack memory used by active coroutines
+   *
+   * This method returns how much stack space has been consumed by currently
+   * active coroutines.
+   *
+   * @return The number of `stack_word` sized words used in the stack
+   */
+  [[nodiscard]] constexpr auto memory_used() const noexcept
+  {
+    return capacity() - memory_remaining();
   }
 
   /**
@@ -838,7 +843,7 @@ private:
     size_t const words_to_allocate = 1uz + ((p_bytes + mask) >> shift);
     auto const new_stack_index = m_stack_pointer + words_to_allocate;
 
-    if (new_stack_index > &m_stack.back()) [[unlikely]] {
+    if (new_stack_index > m_stack_end) [[unlikely]] {
       throw bad_coroutine_alloc(this);
     }
 
@@ -856,16 +861,16 @@ private:
 
   // A concern for this library is how large the context objet is thus the word
   // sizes for each field is denoted below.
+  //////////////////////////////////////////////////////--- // word 0
+  blocked_by m_state = blocked_by::nothing;                 //   1B (u8) pad 4
+  sleep_duration m_sleep_time = sleep_duration::zero();     //   4B (u32)
   std::coroutine_handle<> m_active_handle = noop_sentinel;  // word 1
   stack_word* m_stack_pointer = nullptr;                    // word 2
-  std::span<stack_word> m_stack{};                          // word 3-4
-  context_listener* m_listener = nullptr;                   // word 5
-  context* m_original = nullptr;                            // word 6
-  context* m_awaited_context = nullptr;                     // word 7
-  context* m_awaiting_caller = nullptr;                     // word 8
-  // ---- Members below are below word length ---
-  sleep_duration m_sleep_time = sleep_duration::zero();  // 4B (uint32_t)
-  blocked_by m_state = blocked_by::nothing;              // 1B (uint8_t)
+  stack_word* m_stack_end{};                                // word 3
+  context_listener* m_listener = nullptr;                   // word 4
+  context* m_original = nullptr;                            // word 5
+  context* m_awaited_context = nullptr;                     // word 6
+  context* m_awaiting_caller = nullptr;                     // word 7
 };
 
 /**
@@ -942,7 +947,7 @@ public:
 
     // Restore parent stack, by setting its range to be the start of its
     // stack and the end of our stack.
-    m_parent->m_stack = { m_parent->m_stack.begin(), m_stack.end() };
+    m_parent->m_stack_end = m_stack_end;
   }
 
 private:
@@ -966,13 +971,12 @@ private:
 
     // Our proxy will take control over the rest of the unused stack memory from
     // the above context.
-    auto remaining_words = p_parent.m_stack_pointer - p_parent.m_stack.data();
-    m_stack = p_parent.m_stack.last(remaining_words);
-    m_stack_pointer = m_stack.data();
+    m_stack_pointer = p_parent.m_stack_pointer;
+    m_stack_end = p_parent.m_stack_end;
 
     // Shrink the parent's stack to its current stack pointer, preventing it
     // from allocating again.
-    p_parent.m_stack = { p_parent.m_stack.data(), p_parent.m_stack_pointer };
+    p_parent.m_stack_end = p_parent.m_stack_pointer;
 
     // If this is a proxy, take its pointer to the origin
     if (p_parent.is_proxy()) {
@@ -1005,8 +1009,15 @@ public:
                 "Stack memory must be greater than 0 words.");
 
   inplace_context()
-    : context(m_stack)
+    : context()
   {
+    // NOTE: Passing m_stack to context() in the initializer list would
+    // initialize the stack. But when inplace_context's constructor runs, it
+    // clears the memory of m_stack, which would overwrite the capacity value
+    // that initialize_stack_memory() writes into m_stack.back().
+    //
+    // And thus the line below is load bearing.
+    initialize_stack_memory(m_stack);
   }
 
   inplace_context(inplace_context const&) = delete;
