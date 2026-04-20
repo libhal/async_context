@@ -16,6 +16,6 @@
 
 <!-- How were these changes tested? -->
 
-- [ ] All CI checks pass
+- [ ] Pre-commit checks pass
 - [ ] New/updated tests cover the changes
 - [ ] Tested locally with `conan create .`
