@@ -1,0 +1,16 @@
+2026-04-21T14:52:11-07:00
+Running ./build/armv8-Linux-clang-20/Release/benchmark
+Run on (2 X 48 MHz CPU s)
+Load Average: 0.52, 0.61, 0.34
+----------------------------------------------------------------------------------
+Benchmark                                        Time             CPU   Iterations
+----------------------------------------------------------------------------------
+bm_function_pointer_call                      2.21 ns         2.21 ns    314611692
+bm_virtual_call                               2.22 ns         2.22 ns    314051332
+bm_virtual_call_variant                       3.19 ns         3.19 ns    222172440
+bm_future_sync_return                         4.17 ns         4.17 ns    169325634
+bm_future_coroutine                           26.9 ns         26.9 ns     26128385
+bm_future_sync_await                          18.1 ns         18.1 ns     39155153
+bm_future_mixed                               9.84 ns         9.84 ns     70966534
+bm_future_void_coroutine                      29.6 ns         29.6 ns     26066492
+bm_future_void_coroutine_context_resume       28.2 ns         28.2 ns     18832200
