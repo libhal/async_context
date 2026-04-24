@@ -50,7 +50,11 @@ namespace async::inline v0 {
  * satisfy the alignment contract of operator new. See initialize_stack_memory()
  * for details.
  */
-export using stack_word = std::uintptr_t;
+
+export struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) stack_word
+{
+  uintptr_t data = 0;
+};
 
 /**
  * @brief Bit mask for pointer alignment checking
@@ -403,7 +407,7 @@ public:
     // NOTE: subtract 1 because we use the end of the stack for holding the
     //       length of the stack.
     auto const capacity = p_stack_memory.size() - 1uz;
-    p_stack_memory.back() = capacity;
+    p_stack_memory.back().data = capacity;
     m_stack_pointer = &p_stack_memory.front();
     m_stack_end = &p_stack_memory.back();
   }
@@ -663,7 +667,7 @@ public:
    */
   [[nodiscard]] constexpr auto capacity() const noexcept
   {
-    return *m_stack_end;
+    return m_stack_end->data;
   }
 
   /**
@@ -850,7 +854,8 @@ private:
     // Put the address of the stack pointer member on the stack, before the
     // coroutine frame, such that the delete operation can find the address and
     // update it.
-    *m_stack_pointer = std::bit_cast<stack_word>(&m_stack_pointer);
+    m_stack_pointer->data =
+      std::bit_cast<decltype(m_stack_pointer->data)>(&m_stack_pointer);
 
     // Address of the coroutine frame will be the current position of the stack
     // pointer + 1 to avoid overwriting the stack pointer address.
@@ -1031,7 +1036,7 @@ public:
   }
 
 private:
-  alignas(std::max_align_t) std::array<stack_word, StackSizeInWords> m_stack{};
+  std::array<stack_word, StackSizeInWords> m_stack{};
 };
 
 // =============================================================================
@@ -1084,13 +1089,16 @@ public:
    */
   static constexpr void operator delete(void* p_promise) noexcept
   {
-    // Acquire the pointer to the context stack memory from behind the coroutine
-    // frame's memory.
-    auto** stack_pointer_address = *(static_cast<stack_word***>(p_promise) - 1);
-
-    // Update the stack pointer's address to be equal where it was before the
-    // promise was allocated. Or said another way, the
-    *stack_pointer_address = (static_cast<stack_word*>(p_promise) - 1);
+    // The stack that this promise is allocated on is in stack_word chunks.
+    // Behind the promise's address is a stack_word that has the stack pointer's
+    // address within its `data` member.
+    auto* frame_header = static_cast<stack_word*>(p_promise) - 1uz;
+    // The data field contains the address of the stack pointer, making it a
+    // double pointer.
+    auto** stack_pointer_ptr = std::bit_cast<stack_word**>(frame_header->data);
+    // De-reference the stack_pointer_ptr to modify the stack_pointer_ptr and
+    // assign it to the address of the frame_header
+    *stack_pointer_ptr = frame_header;
   }
 
   /**
