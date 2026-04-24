@@ -50,7 +50,6 @@ namespace async::inline v0 {
  * satisfy the alignment contract of operator new. See initialize_stack_memory()
  * for details.
  */
-
 export struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) stack_word
 {
   uintptr_t data = 0;
