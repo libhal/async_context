@@ -18,6 +18,8 @@ module;
 #include <cstddef>
 
 #include <coroutine>
+#include <new>
+#include <utility>
 
 export module async_context:sync;
 
@@ -154,7 +156,6 @@ public:
 
   private:
     friend class mutex;
-
     guard(mutex* p_access, context* p_context)
       : m_access(p_access)
       , m_context(p_context)

@@ -43,7 +43,7 @@ void guards_tests()
     auto guard = co_await mutex.lock(p_context);
 
     // setup dma transaction...
-    std::println("Waiting on io complete flag, blocking by I/O");
+    std::println("Waiting on io complete flag, blocking by signal");
 
     // Would normally wrap this in a while loop to check if the resource is
     // fread.

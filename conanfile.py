@@ -54,7 +54,7 @@ class async_context_conan(ConanFile):
     def _compilers_minimum_version(self):
         # We may reduce these in the future.
         return {
-            "gcc": ("14", "GCC 14+ required for async_context"),
+            "gcc": ("15", "GCC 15+ required for async_context"),
             "clang": (
                 "19",
                 "Clang 19+ required for async_context"
@@ -100,7 +100,7 @@ class async_context_conan(ConanFile):
     def build_requirements(self):
         self.tool_requires("cmake/[^4.0.0]")
         self.tool_requires("ninja/[^1.3.0]")
-        self.requires("libhal-cmake-util/[^5.0.3]")
+        self.requires("libhal-cmake-util/[^5.0.6]")
         if str(self.settings.os) != "baremetal":
             self.test_requires("boost-ext-ut/2.3.1",
                                options={'disable_module': False})
