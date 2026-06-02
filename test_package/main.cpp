@@ -29,22 +29,35 @@ import async_context;
 
 using namespace std::chrono_literals;
 
-// Simulates reading sensor data with I/O delay
-async::future<int> read_sensor(async::context& ctx, std::string_view p_name)
+// linking println doesn't work on embedded systems generally
+template<typename... Args>
+void test_package_print([[maybe_unused]] std::format_string<Args...> p_fmt,
+                        [[maybe_unused]] Args&&... p_args)
 {
-  std::println("['{}': Sensor] Read complete: 42", p_name);
+  // If we are on a system with a real OS (Linux, Windows, macOS), use println.
+  // If we are in an embedded toolchain (arm-none-eabi, riscv64-unknown-elf),
+  // the following macro will NOT be defined.
+#if defined(__GLIBC__) || defined(_WIN32) || defined(__APPLE__)
+  std::println(stdout, p_fmt, p_args...);
+#endif
+}
+
+// Simulates reading sensor data with I/O delay
+async::future<int> read_sensor(async::context&, std::string_view p_name)
+{
+  test_package_print("['{}': Sensor] Read complete: 42", p_name);
   co_return 42;
 }
 
 // Processes data with computation delay
-async::future<int> process_data(async::context& p_ctx,
+async::future<int> process_data(async::context&,
                                 std::string_view p_name,
                                 int value)
 {
-  std::println("['{}': Process] Processing {}...", p_name, value);
+  test_package_print("['{}': Process] Processing {}...", p_name, value);
   co_await 10ms;  // Simulate processing time
   int result = value * 2;
-  std::println("['{}': Process] Result: {}", p_name, result);
+  test_package_print("['{}': Process] Result: {}", p_name, result);
   co_return result;
 }
 
@@ -52,22 +65,22 @@ async::future<void> write_actuator(async::context& p_ctx,
                                    std::string_view p_name,
                                    int value)
 {
-  std::println("['{}': Actuator] Writing {}...", p_name, value);
+  test_package_print("['{}': Actuator] Writing {}...", p_name, value);
   co_await p_ctx.block_by_signal();
-  std::println("['{}': Actuator] Write complete!", p_name);
+  test_package_print("['{}': Actuator] Write complete!", p_name);
 }
 
 // Coordinates the full pipeline
 async::future<void> sensor_pipeline(async::context& ctx,
                                     std::string_view p_name)
 {
-  std::println("Pipeline '{}' starting...", p_name);
+  test_package_print("Pipeline '{}' starting...", p_name);
 
   int sensor_value = co_await read_sensor(ctx, p_name);
   int processed = co_await process_data(ctx, p_name, sensor_value);
   co_await write_actuator(ctx, p_name, processed);
 
-  std::println("Pipeline '{}' complete!\n", p_name);
+  test_package_print("Pipeline '{}' complete!\n", p_name);
 }
 
 // Stub implementation for ARM M Cortex targets without
@@ -103,8 +116,8 @@ int main()
   auto pipeline2_future = sensor_pipeline(ctx1, "🔥 System 2");
   // This is needed to simulate the context being unblocked by an external
   // callback.
-  auto unblock_function =
-    [&ctx0, &ctx1](async::context& p_ctx) -> async::future<void> {
+  auto unblock_function = [&ctx0,
+                           &ctx1](async::context&) -> async::future<void> {
     while (true) {
       if (ctx0.done() and ctx1.done()) {
         break;
@@ -132,6 +145,6 @@ int main()
   // Run ctx0, ctx1 and unblock_context to completion
   async::run_until_done(clk, stub_sleep_function, ctx0, ctx1, unblock_context);
 
-  std::println("Both pipelines completed successfully!");
+  test_package_print("Both pipelines completed successfully!");
   return 0;
 }

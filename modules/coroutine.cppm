@@ -1622,7 +1622,7 @@ public:
     requires std::is_constructible_v<T, U&&>
   {
     m_state.template emplace<T>(std::forward<U>(p_value));
-  };
+  }
 
   /**
    * @brief Move constructor for future
