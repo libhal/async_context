@@ -120,9 +120,10 @@ void run_sleep_task_test()
       {
       }
 
-      void on_unblock(async::context& p_context) noexcept override
+      void on_unblock(async::context& p_context,
+                      async::blocked_by p_previous_state) noexcept override
       {
-        if (p_context.state() == async::blocked_by::signal) {
+        if (p_previous_state == async::blocked_by::signal) {
           std::lock_guard lock(unblocked_mutex);
           unblocked_list.push_back(&p_context);
         }

@@ -17,10 +17,13 @@ void context_listener_test()
     async::context const* unblocked_context = nullptr;
     async::context const* sync_blocker = nullptr;
     async::context* sync_blocked = nullptr;
+    async::blocked_by previous_state = async::blocked_by::nothing;
 
-    void on_unblock(async::context& p_context) noexcept override
+    void on_unblock(async::context& p_context,
+                    async::blocked_by p_previous_state) noexcept override
     {
       unblocked_context = &p_context;
+      previous_state = p_previous_state;
     }
 
     void on_sync_block(async::context& p_blocked,
@@ -35,6 +38,7 @@ void context_listener_test()
       unblocked_context = nullptr;
       sync_blocker = nullptr;
       sync_blocked = nullptr;
+      previous_state = async::blocked_by::nothing;
     }
   };
 

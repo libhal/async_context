@@ -271,13 +271,16 @@ private:
    * state will be `blocked_by::nothing` at the time of this call. The
    * implementor may read any state from the context but MUST NOT resume or
    * destroy it within this call.
+   * @param p_previous_state the state of the context prior to being unblocked.
    *
    * @note This method MUST be noexcept and ISR-safe. It may be called from
    * any execution context including interrupt handlers.
    */
-  virtual void on_unblock(context& p_context) noexcept
+  virtual void on_unblock(context& p_context,
+                          blocked_by p_previous_state) noexcept
   {
     std::ignore = p_context;
+    std::ignore = p_previous_state;
   }
 
   /**
@@ -439,14 +442,16 @@ public:
    */
   constexpr void unblock() noexcept
   {
-    if (get_original().m_listener) {
-      get_original().m_listener->on_unblock(*this);
-    }
+    auto const previous = get_original().m_state;
 
     // We clear this context state information after the unblock listener is
     // invoked to allow the unblock listener to inspect the context's current
     // state prior to being unblocked.
     unblock_without_notification();
+
+    if (get_original().m_listener) {
+      get_original().m_listener->on_unblock(*this, previous);
+    }
   }
 
   /**

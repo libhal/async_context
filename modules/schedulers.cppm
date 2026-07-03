@@ -363,4 +363,29 @@ void run_until_done(
                       &p_listener,
                       p_tasks...);
 }
+
+class auto_resume : public context_listener
+{
+
+  /**
+   * @brief Called when a context transitions to the unblocked state
+   *
+   * This method is invoked by `context::unblock()` immediately after the
+   * context's state is set to `blocked_by::nothing`. It signals to the
+   * scheduler that the context is now ready to be resumed.
+   *
+   * @param p_context The context that has just been unblocked. The context's
+   * state will be `blocked_by::nothing` at the time of this call. The
+   * implementor may read any state from the context but MUST NOT resume or
+   * destroy it within this call.
+   *
+   * @note This method MUST be noexcept and ISR-safe. It may be called from
+   * any execution context including interrupt handlers.
+   */
+  void on_unblock(context& p_context, blocked_by) noexcept override
+  {
+    p_context.resume();
+  }
+};
+
 }  // namespace async::inline v0
