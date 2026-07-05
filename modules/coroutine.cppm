@@ -1044,6 +1044,8 @@ private:
 //
 // =============================================================================
 
+export class cleanup_base;
+
 /**
  * @brief The base promise class for coroutine operations
  *
@@ -1271,6 +1273,7 @@ public:
   }
 
 protected:
+  friend class cleanup_base;
   /**
    * @brief Type alias for cancellation function pointer
    *
@@ -1285,6 +1288,7 @@ protected:
   std::coroutine_handle<> m_continuation = context::noop_sentinel;
   class context* m_context = nullptr;
   cancellation_fn* m_cancel = nullptr;
+  cleanup_base* m_cleanup_linked_list = nullptr;
 };
 
 export template<typename T>
@@ -1981,4 +1985,102 @@ void context::cancel()
     m_awaiting_caller = nullptr;
   }
 }
+
+class cleanup_base
+{
+public:
+  cleanup_base(promise_base* p_promise)
+    : m_promise(p_promise)
+  {
+#if defined(__cpp_contracts)
+    // It should never be possible to pass a null promise base to
+    // async::cleanup.
+    contract_assert(p_promise != nullptr);
+#endif
+    // Make the start end of the cleanup list our next cleanup
+    m_next_cleanup = m_promise->m_cleanup_linked_list;
+    // Make ourselves the start of the linked list
+    m_promise->m_cleanup_linked_list = this;
+  }
+
+  cleanup_base(cleanup_base const&) = delete;
+  cleanup_base& operator=(cleanup_base const&) = delete;
+  cleanup_base(cleanup_base&&) = delete;
+  cleanup_base& operator=(cleanup_base&&) = delete;
+
+  ~cleanup_base()
+  {
+#if defined(__cpp_contracts)
+    // This cleanup object was destroyed outside of its scope ordering,
+    // meaning it's destructor was called directly in some way that violates
+    // the ordering of the other cleanup objects within the same function."
+    contract_assert(m_promise->m_cleanup_linked_list == this);
+#endif
+    // Replace ourselves with our next cleanup
+    m_promise->m_cleanup_linked_list = m_next_cleanup;
+  }
+
+  void cleanup_function(async::context& p_context)
+  {
+    m_cleanup_function(p_context, this);
+  }
+
+private:
+  promise_base* m_promise = nullptr;
+  cleanup_base* m_next_cleanup = nullptr;
+
+protected:
+  using cleanup_factory_function = async::future<void>(async::context&, void*);
+  cleanup_factory_function* m_cleanup_function = nullptr;
+};
+
+template<class Callable>
+class cleanup_function : public cleanup_base
+{
+public:
+  cleanup_function(promise_base* p_promise, Callable&& p_callable)
+    : cleanup_base(p_promise)
+    , m_cleanup_function_object(std::move(p_callable))
+  {
+    m_cleanup_function = &cleanup_handler;
+  }
+
+  static async::future<void> cleanup_handler(async::context& p_context,
+                                             void* p_instance)
+  {
+    return static_cast<cleanup_function<Callable>*>(p_instance)
+      ->m_cleanup_function_object(p_context);
+  }
+
+private:
+  Callable m_cleanup_function_object;
+};
+
+export template<class Callable>
+class defer
+{
+  defer(Callable&& p_callable)
+    : m_callable(std::move(p_callable))
+  {
+  }
+
+  [[nodiscard]] consteval bool await_ready() const noexcept
+  {
+    return false;
+  }
+
+  bool await_suspend(std::coroutine_handle<promise_base> p_caller) noexcept
+  {
+    m_promise = &p_caller.promise();
+    return false;  // Tell caller/awaiter to continue their own execution
+  }
+
+  cleanup_function<Callable> await_resume()
+  {
+    return { m_promise, m_callable };
+  }
+
+  Callable&& m_callable;
+  promise_base* m_promise = nullptr;
+};
 }  // namespace async::inline v0
