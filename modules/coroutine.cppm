@@ -1274,6 +1274,9 @@ public:
 
 protected:
   friend class cleanup_base;
+
+  template<class Promise>
+  friend struct final_awaiter;
   /**
    * @brief Type alias for cancellation function pointer
    *
@@ -1380,22 +1383,7 @@ struct final_awaiter
    * originally).
    */
   constexpr std::coroutine_handle<> await_suspend(
-    std::coroutine_handle<Promise> p_completing_coroutine) noexcept
-  {
-    // The coroutine is now suspended at the final-suspend point.
-    // Lookup its continuation in the promise and resume it symmetrically.
-    //
-    // Rather than return control back to the application, we continue the
-    // caller function allowing it to yield when it reaches another suspend
-    // point. The idea is that prior to this being called, we were executing
-    // code and thus, when we resume the caller, we are still running code.
-    // Lets continue to run as much code until we reach an actual suspend
-    // point.
-    auto next_to_run = p_completing_coroutine.promise().pop_active_coroutine();
-    // Destroy promise at this point as there is no more use for it.
-    p_completing_coroutine.destroy();
-    return next_to_run;
-  }
+    std::coroutine_handle<Promise> p_completing_coroutine) noexcept;
 
   /**
    * @brief Handle resume after completion
@@ -1997,7 +1985,8 @@ public:
     // async::cleanup.
     contract_assert(p_promise != nullptr);
 #endif
-    // Make the start end of the cleanup list our next cleanup
+    // Make the start end of the cleanup list our next cleanup, starts at
+    // nullptr
     m_next_cleanup = m_promise->m_cleanup_linked_list;
     // Make ourselves the start of the linked list
     m_promise->m_cleanup_linked_list = this;
@@ -2020,9 +2009,11 @@ public:
     m_promise->m_cleanup_linked_list = m_next_cleanup;
   }
 
-  void cleanup_function(async::context& p_context)
+  void load_cleanup()
   {
-    m_cleanup_function(p_context, this);
+    // m_next_cleanup is nullptr when it finishes
+    m_promise->m_cleanup_linked_list = m_next_cleanup;
+    m_future_storage = m_cleanup_function(*m_promise->m_context, this);
   }
 
 private:
@@ -2032,6 +2023,7 @@ private:
 protected:
   using cleanup_factory_function = async::future<void>(async::context&, void*);
   cleanup_factory_function* m_cleanup_function = nullptr;
+  future<void> m_future_storage;
 };
 
 template<class Callable>
@@ -2086,4 +2078,29 @@ private:
   Callable&& m_callable;
   promise_base* m_promise = nullptr;
 };
+
+template<class Promise>
+constexpr std::coroutine_handle<> final_awaiter<Promise>::await_suspend(
+  std::coroutine_handle<Promise> p_completing_coroutine) noexcept
+{
+  auto& promise = p_completing_coroutine.promise();
+  if (promise.m_cleanup_linked_list) {
+    promise.m_cleanup_linked_list->load_cleanup();
+    return promise.m_context->active_handle();
+  } else {
+    // The coroutine is now suspended at the final-suspend point.
+    // Lookup its continuation in the promise and resume it symmetrically.
+    //
+    // Rather than return control back to the application, we continue the
+    // caller function allowing it to yield when it reaches another suspend
+    // point. The idea is that prior to this being called, we were executing
+    // code and thus, when we resume the caller, we are still running code.
+    // Lets continue to run as much code until we reach an actual suspend
+    // point.
+    auto next_to_run = promise.pop_active_coroutine();
+    // Destroy promise at this point as there is no more use for it.
+    p_completing_coroutine.destroy();
+    return next_to_run;
+  }
+}
 }  // namespace async::inline v0

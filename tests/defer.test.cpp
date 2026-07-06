@@ -1,7 +1,7 @@
 #include <coroutine>
+#include <print>
 
 #include <boost/ut.hpp>
-#include <print>
 
 import async_context;
 import test_utils;
@@ -15,8 +15,21 @@ void defer_tests()
 
   bool cleanup_ran = false;
 
+  struct obj
+  {
+    obj()
+    {
+      std::println("Created");
+    }
+    ~obj()
+    {
+      std::println("Destroyed");
+    }
+  };
+
   auto coroutine = [&](async::context&) -> async::future<void> {
-    co_await async::defer([&](async::context&) -> async::future<void> {
+    obj o;
+    auto v = co_await async::defer([&](async::context&) -> async::future<void> {
       cleanup_ran = true;
       co_return;
     });
@@ -25,7 +38,9 @@ void defer_tests()
 
   // Exercise
   auto future = coroutine(ctx);
+  std::println("Before Resume");
   future.resume();
+  std::println("After Resume");
 
   // Verify
   expect(that % future.done());
