@@ -2059,17 +2059,19 @@ private:
 export template<class Callable>
 class defer
 {
+public:
   defer(Callable&& p_callable)
     : m_callable(std::move(p_callable))
   {
   }
 
-  [[nodiscard]] consteval bool await_ready() const noexcept
+  [[nodiscard]] constexpr bool await_ready() const noexcept
   {
     return false;
   }
 
-  bool await_suspend(std::coroutine_handle<promise_base> p_caller) noexcept
+  template<class T>
+  bool await_suspend(std::coroutine_handle<promise<T>> p_caller) noexcept
   {
     m_promise = &p_caller.promise();
     return false;  // Tell caller/awaiter to continue their own execution
@@ -2077,9 +2079,10 @@ class defer
 
   cleanup_function<Callable> await_resume()
   {
-    return { m_promise, m_callable };
+    return { m_promise, std::move(m_callable) };
   }
 
+private:
   Callable&& m_callable;
   promise_base* m_promise = nullptr;
 };
