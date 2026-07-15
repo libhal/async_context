@@ -1,5 +1,12 @@
-Checks: "readability-identifier-naming,modernize-*,performance-*,bugprone-*,-modernize-use-trailing-return-type,-bugprone-exception-escape"
-HeaderFilterRegex: ".*"
+Checks: >
+  -*,
+  readability-identifier-naming,
+  modernize-*,
+  performance-*,
+  bugprone-*,
+  -bugprone-exception-escape,
+  clang-diagnostic-dangling*,
+  -modernize-use-trailing-return-type
 WarningsAsErrors: "*"
 UseColor: true
 CheckOptions:
