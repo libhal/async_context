@@ -136,20 +136,28 @@ BENCHMARK(bm_virtual_call);
 // 2.1. VIRTUAL CALLS – variant return type
 // ---------------------------------------------------------------------------
 
+// A generic 4-alternative variant shaped like async::future<T>'s old
+// internal representation, kept local to this benchmark so it stays
+// decoupled from that (now-internal) implementation detail. What's being
+// measured here is the overhead of a virtual call returning a variant, not
+// anything specific to async::future<T>'s current representation.
+using benchmark_variant = std::
+  variant<std::coroutine_handle<>, int, std::monostate, std::exception_ptr>;
+
 struct virtual_base_variant
 {
   // Return a variant that holds the integer result.
-  virtual async::future_state<int> compute(int x) = 0;
+  virtual benchmark_variant compute(int x) = 0;
   virtual ~virtual_base_variant() noexcept = default;
 };
 
 struct virtual_level3_variant : virtual_base_variant
 {
-  async::future_state<int> compute(int x) override
+  benchmark_variant compute(int x) override
   {
     // For this benchmark we never use the coroutine‑handle or the
-    // cancelled_state – only the normal value.
-    return async::future_state<int>{ x * 2 };
+    // monostate cancelled-like state – only the normal value.
+    return benchmark_variant{ x * 2 };
   }
 };
 
@@ -160,7 +168,7 @@ struct virtual_level2_variant : virtual_base_variant
   {
   }
 
-  async::future_state<int> compute(int x) override
+  benchmark_variant compute(int x) override
   {
     // Forward the call to the next level and add 1.
     auto res = m_next->compute(x);
@@ -183,7 +191,7 @@ struct virtual_level1_variant : virtual_base_variant
   {
   }
 
-  async::future_state<int> compute(int x) override
+  benchmark_variant compute(int x) override
   {
     auto res = m_next->compute(x);
     if (auto* p = std::get_if<int>(&res)) {

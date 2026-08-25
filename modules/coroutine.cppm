@@ -768,6 +768,7 @@ private:
 
   template<typename T>
   friend class future;
+  friend class future_base;
 
   /**
    * @brief Check if this is a proxy context
@@ -1295,21 +1296,12 @@ class future;
  *
  * This alias provides a convenient way to represent either std::monostate (for
  * void) or the actual type T, depending on whether T is void. This is needed
- * for std::variant which cannot have a void type as a member.
+ * for future<T>'s value storage, which cannot have a void type as a member.
  *
  * @tparam T The type to conditionally wrap with monostate
  */
 template<typename T>
 using monostate_or = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
-
-/**
- * @brief Represents a finished future of type void
- *
- * This struct is used as one of the states in a future's state variant to
- * represent that a void future has completed successfully.
- */
-struct cancelled_state
-{};
 
 /**
  * @brief Represents a future that is currently busy.
@@ -1321,25 +1313,252 @@ struct busy_state
 {};
 
 /**
- * @brief Defines the states that a future can be in
- *
- * This type alias defines the possible states a future can be in:
- *
- * - Running (suspended at await point)
- * - Value (completed with a value)
- * - Cancelled (explicitly cancelled)
- * - Exception (completed with an exception)
- *
- * @tparam T - the type for the future to eventually provide to the owner of
- * this future.
+ * @brief Non-template base for future<T>, holding everything that never
+ * depends on T: the completion-state tag, the pending coroutine handle, and
+ * the exception_ptr. Every future<T>, regardless of T, shares exactly one
+ * compiled copy of the logic that lives here (the awaiter's suspend/failure
+ * paths, done()/is_cancelled()/resume()/cancel()) instead of re-instantiating
+ * it per T. Only future<T>'s own value storage and the fast "extract T" path
+ * stay templated - see future<T> below.
  */
-export template<typename T>
-using future_state =
-  std::variant<std::coroutine_handle<>,  // 0 - running (the suspend case)
-               monostate_or<T>,          // 1 - value (happy path!)
-               cancelled_state,          // 2 - cancelled
-               std::exception_ptr        // 3 - exception
-               >;
+export class future_base
+{
+public:
+  using handle_type = std::coroutine_handle<>;
+
+  /**
+   * @brief Thrown when a future is in the cancelled state and has been
+   * awaited on.
+   *
+   * This exception is thrown when a cancelled future is awaited. A future can
+   * be in the cancelled state if its coroutine promise was destroyed.
+   *
+   * In general, normal usage of async context should never result in this
+   * exception being thrown. In order for this to be seen, a future would need
+   * to be created and then cancelled, then awaited on. This does not occur if
+   * a future is awaited and then the context is cancelled.
+   */
+  struct cancelled : public std::exception
+  {
+    explicit cancelled(void const* p_future_address) noexcept
+      : future_address(p_future_address)
+    {
+    }
+
+    /**
+     * @brief Get exception message
+     *
+     * @return C-string describing the cancellation error
+     */
+    [[nodiscard]] char const* what() const noexcept override
+    {
+      return "This future has been cancelled!";
+    }
+
+    void const* future_address = nullptr;
+  };
+
+  future_base(future_base const&) = delete;
+  future_base& operator=(future_base const&) = delete;
+
+  /**
+   * @brief Reports if this async object has finished its operation.
+   *
+   * @return true - this operation is finished and either contains a value,
+   * an exception, or this future is in a cancelled state.
+   * @return false - operation has yet to complete.
+   */
+  [[nodiscard]] constexpr bool done() const noexcept
+  {
+    return m_tag != state_tag::running;
+  }
+
+  /**
+   * @brief Returns true if this future is in the cancelled state.
+   */
+  [[nodiscard]] constexpr bool is_cancelled() const noexcept
+  {
+    return m_tag == state_tag::cancelled;
+  }
+
+  /**
+   * @brief Returns true if this future contains a value.
+   */
+  [[nodiscard]] constexpr bool has_value() const noexcept
+  {
+    return m_tag == state_tag::value;
+  }
+
+  constexpr void resume() const
+  {
+    if (m_tag == state_tag::running) {
+      std::coroutine_handle<promise_base>::from_address(m_base.handle.address())
+        .promise()
+        .get_context()
+        .resume();
+    }
+
+    if (m_tag == state_tag::exception) {
+      std::rethrow_exception(m_base.exception);
+    }
+  }
+
+  void cancel()
+  {
+    if (done()) {
+      return;
+    }
+
+    std::coroutine_handle<promise_base>::from_address(m_base.handle.address())
+      .promise()
+      .get_context()
+      .cancel();
+  }
+
+protected:
+  enum class state_tag : std::uint8_t
+  {
+    running,    // 0 - suspended at await point, m_base.handle is live
+    value,      // 1 - completed with a value (lives in future<T>'s own storage)
+    cancelled,  // 2 - cancelled, no storage needed
+    exception,  // 3 - completed with an exception, m_base.exception is live
+  };
+
+  // Only ever holds ONE of {handle, exception} - "value" state means the
+  // value lives in future<T>'s own derived storage, not here, and
+  // "cancelled" needs no storage at all.
+  union base_union
+  {
+    handle_type handle;
+    std::exception_ptr exception;
+
+    constexpr base_union() noexcept
+      : handle()
+    {
+    }
+    constexpr ~base_union() noexcept
+    {
+    }
+  };
+
+  state_tag m_tag =
+    state_tag::value;  // default: "done", matches future<void>'s
+                       // default-constructed state
+  base_union m_base;
+
+  constexpr future_base() noexcept = default;
+
+  explicit constexpr future_base(handle_type p_handle) noexcept
+    : m_tag(state_tag::running)
+  {
+    m_base.handle = p_handle;
+  }
+
+  constexpr future_base(future_base&& p_other) noexcept
+    : m_tag(std::exchange(p_other.m_tag, state_tag::value))
+  {
+    switch (m_tag) {
+      case state_tag::running:
+        m_base.handle = p_other.m_base.handle;
+        break;
+      case state_tag::exception:
+        new (&m_base.exception) std::exception_ptr(p_other.m_base.exception);
+        p_other.m_base.exception.~exception_ptr();
+        break;
+      default:
+        break;
+    }
+  }
+
+  constexpr future_base& operator=(future_base&& p_other) noexcept
+  {
+    if (this != &p_other) {
+      if (m_tag == state_tag::exception) {
+        m_base.exception.~exception_ptr();
+      }
+      m_tag = std::exchange(p_other.m_tag, state_tag::value);
+      switch (m_tag) {
+        case state_tag::running:
+          m_base.handle = p_other.m_base.handle;
+          break;
+        case state_tag::exception:
+          new (&m_base.exception) std::exception_ptr(p_other.m_base.exception);
+          p_other.m_base.exception.~exception_ptr();
+          break;
+        default:
+          break;
+      }
+    }
+    return *this;
+  }
+
+  /**
+   * @brief Destruct future_base
+   *
+   * If this future contains a coroutine handle on destruction, then cancel is
+   * called on the associated context. If it holds an exception, that
+   * exception_ptr is released.
+   */
+  ~future_base()
+  {
+    if (m_tag == state_tag::exception) {
+      m_base.exception.~exception_ptr();
+    } else if (m_tag == state_tag::running) {
+      std::coroutine_handle<promise_base>::from_address(m_base.handle.address())
+        .promise()
+        .get_context()
+        .cancel();
+    }
+  }
+
+  /**
+   * @brief The entire cold path for awaiter::await_resume(): rethrow the
+   * stored exception, throw `cancelled`, or terminate on a contract
+   * violation (awaited before ready). Never depends on T, so this is one
+   * shared, non-template function for every future<T> in the program.
+   */
+  [[noreturn]] void throw_failure() const
+  {
+    if (m_tag == state_tag::exception) {
+      std::rethrow_exception(m_base.exception);
+    } else if (m_tag == state_tag::cancelled) {
+      throw cancelled{ this };
+    }
+    // Awaited before ready - contract violation.
+#if defined(__cpp_contracts)
+    contract_assert(m_tag == state_tag::running);
+#endif
+    std::terminate();
+  }
+
+  /**
+   * @brief The entire body of awaiter::await_suspend(): register the cross-
+   * context bookkeeping if needed and return the handle to resume. Only
+   * needs promise_base (via the calling coroutine's type-erased handle), so
+   * this never depended on either future<T>'s T or the caller's promise
+   * type - one shared, non-template function.
+   */
+  std::coroutine_handle<> suspend_impl(
+    std::coroutine_handle<> p_calling_coroutine) noexcept
+  {
+    auto handle = m_base.handle;
+    auto& calling_ctx = std::coroutine_handle<promise_base>::from_address(
+                          p_calling_coroutine.address())
+                          .promise()
+                          .get_context();
+    auto& awaited_ctx =
+      std::coroutine_handle<promise_base>::from_address(handle.address())
+        .promise()
+        .get_context();
+
+    if (&calling_ctx != &awaited_ctx) [[unlikely]] {
+      calling_ctx.m_awaited_context = &awaited_ctx;
+      awaited_ctx.m_awaiting_caller = &calling_ctx;
+    }
+
+    return handle;
+  }
+};
 
 /**
  * @brief Final awaiter for coroutine completion
@@ -1411,31 +1630,26 @@ struct final_awaiter
  *
  * @tparam T The type of value to return
  */
-template<typename T>
+export template<typename T>
 struct promise_return_base
 {
   /**
    * @brief Handle return value for non-void futures
    *
+   * Defined out-of-line after future<T> is complete - the body writes
+   * directly into the owning future<T>'s value storage.
+   *
    * @param p_value The value to return from the coroutine
    */
   template<typename U>
   void return_value(U&& p_value) noexcept
-    requires std::is_constructible_v<T, U&&>
-  {
-    // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): clang-tidy incorrectly
-    // assumes this pointer is uninitialized. The promise is constructed from
-    // the future returned by `get_return_object()`, which properly initializes
-    // this promise.
-    m_future_state->template emplace<T>(std::forward<U>(p_value));
-    // NOLINTEND(clang-analyzer-core.CallAndMessage)
-  }
+    requires std::is_constructible_v<T, U&&>;
 
   /**
-   * @brief Pointer to the future state that should be set at future<T>
-   * construction.
+   * @brief Pointer to the future<T> that owns this promise's result, set at
+   * future<T> construction.
    */
-  future_state<T>* m_future_state = nullptr;
+  future<T>* m_owner = nullptr;
 };
 
 /**
@@ -1443,27 +1657,21 @@ struct promise_return_base
  *
  * This specialization handles return values for void futures.
  */
-template<>
+export template<>
 struct promise_return_base<void>
 {
   /**
    * @brief Handle return void for void futures
+   *
+   * Defined out-of-line after future<void> is complete.
    */
-  void return_void() noexcept
-  {
-    // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): clang-tidy incorrectly
-    // assumes this pointer is uninitialized. The promise is constructed from
-    // the future returned by `get_return_object()`, which properly initializes
-    // this promise.
-    *m_future_state = std::monostate{};
-    // NOLINTEND(clang-analyzer-core.CallAndMessage)
-  }
+  void return_void() noexcept;
 
   /**
-   * @brief Pointer to the future state that should be set at future<void>
-   * construction.
+   * @brief Pointer to the future<void> that owns this promise's result, set
+   * at future<void> construction.
    */
-  future_state<void>* m_future_state = nullptr;
+  future<void>* m_owner = nullptr;
 };
 
 /**
@@ -1502,28 +1710,24 @@ public:
    * @brief Handle unhandled exceptions in coroutines
    *
    * This method is called when a coroutine throws an exception that isn't
-   * handled within the coroutine itself.
+   * handled within the coroutine itself. Defined out-of-line after future<T>
+   * is complete.
    */
-  void unhandled_exception() noexcept
-  {
-    *promise_return_base<T>::m_future_state = std::current_exception();
-  }
+  void unhandled_exception() noexcept;
 
   /**
-   * @brief Set future<T> object associated with this promise to cancelled state
+   * @brief Set future<T> object associated with this promise to the
+   * cancelled state.
    *
-   * This static method is used to cancel a promise by setting its state to
-   * cancelled_state. The exact promise type information is type erased and
-   * saved into the promise_base such that the `context` class can safely set
-   * its future objects to a cancelled state.
+   * This static method is used to cancel a promise by setting its owning
+   * future's state to cancelled. The exact promise type information is type
+   * erased and saved into the promise_base such that the `context` class can
+   * safely cancel its future objects. Defined out-of-line after future<T> is
+   * complete.
    *
    * @param p_self Pointer to the promise to cancel
    */
-  static void cancel_promise(void* p_self)
-  {
-    auto* self = static_cast<promise<T>*>(p_self);
-    *self->m_future_state = cancelled_state{};
-  }
+  static void cancel_promise(void* p_self);
 
   /**
    * @brief Get the return object for this promise
@@ -1547,45 +1751,13 @@ public:
  * @tparam T The type of value that this future will eventually hold
  */
 export template<typename T>
-class future
+class future : public future_base
 {
 public:
   using promise_type = promise<T>;
-  using handle_type = std::coroutine_handle<>;
   using full_handle_type = std::coroutine_handle<promise_type>;
-
-  /**
-   * @brief Thrown when a future is in the cancelled state and has been awaited
-   * on
-   *
-   * This exception is thrown when a cancelled future is awaited. A future can
-   * be in the cancelled state if its coroutine promise was destroyed.
-   *
-   * In general, normal usage of async context should never result in this
-   * exception being thrown. In order for this to be seen, a future would need
-   * to be created and then cancelled, then awaited on. This does not occur if a
-   * future is awaited and then the context is cancelled.
-   *
-   */
-  struct cancelled : public std::exception
-  {
-    cancelled(void const* p_future_address)
-      : future_address(p_future_address)
-    {
-    }
-
-    /**
-     * @brief Get exception message
-     *
-     * @return C-string describing the cancellation error
-     */
-    [[nodiscard]] char const* what() const noexcept override
-    {
-      return "This future has been cancelled!";
-    }
-
-    void const* future_address = nullptr;
-  };
+  // future_base::cancelled is inherited, so future<T>::cancelled still
+  // resolves for existing catch/throw call sites.
 
   future(future const& p_other) = delete;
   future& operator=(future const& p_other) = delete;
@@ -1594,13 +1766,10 @@ public:
    * @brief Default initialization for a void future
    *
    * This future will considered to be done on creation.
-   *
-   * @note For void futures, the state is initialized to std::monostate,
-   * indicating completion with no return value.
    */
-  future()
+  constexpr future() noexcept
     requires(std::is_void_v<T>)
-    : m_state(std::monostate{})
+    : future_base()
   {
   }
 
@@ -1612,16 +1781,13 @@ public:
    *
    * @tparam U - type that can construct a type T (which includes T itself)
    * @param p_value The value to initialize the future with
-   *
-   * @note This constructor creates a completed future containing the provided
-   * value. The future will be in the "done" state with the value stored
-   * internally.
    */
   template<typename U>
   constexpr future(U&& p_value) noexcept
     requires std::is_constructible_v<T, U&&>
+    : future_base()
   {
-    m_state.template emplace<T>(std::forward<U>(p_value));
+    new (&m_storage.value) T(std::forward<U>(p_value));
   }
 
   /**
@@ -1636,13 +1802,18 @@ public:
    * operation or result.
    */
   constexpr future(future&& p_other) noexcept
-    : m_state(std::exchange(p_other.m_state, std::monostate{}))
+    : future_base(std::move(p_other))
   {
-    if (std::holds_alternative<handle_type>(m_state)) {
-      auto handle = std::get<handle_type>(m_state);
-      full_handle_type::from_address(handle.address())
+    if constexpr (!std::is_void_v<T>) {
+      if (m_tag == state_tag::value) {
+        new (&m_storage.value) T(std::move(p_other.m_storage.value));
+        p_other.m_storage.value.~T();
+      }
+    }
+    if (m_tag == state_tag::running) {
+      full_handle_type::from_address(m_base.handle.address())
         .promise()
-        .m_future_state = &m_state;
+        .m_owner = this;
     }
   }
 
@@ -1661,12 +1832,22 @@ public:
   constexpr future& operator=(future&& p_other) noexcept
   {
     if (this != &p_other) {
-      m_state = std::exchange(p_other.m_state, std::monostate{});
-      if (std::holds_alternative<handle_type>(m_state)) {
-        auto handle = std::get<handle_type>(m_state);
-        full_handle_type::from_address(handle.address())
+      if constexpr (!std::is_void_v<T>) {
+        if (m_tag == state_tag::value) {
+          m_storage.value.~T();
+        }
+      }
+      future_base::operator=(std::move(p_other));
+      if constexpr (!std::is_void_v<T>) {
+        if (m_tag == state_tag::value) {
+          new (&m_storage.value) T(std::move(p_other.m_storage.value));
+          p_other.m_storage.value.~T();
+        }
+      }
+      if (m_tag == state_tag::running) {
+        full_handle_type::from_address(m_base.handle.address())
           .promise()
-          .m_future_state = &m_state;
+          .m_owner = this;
       }
     }
     return *this;
@@ -1675,96 +1856,31 @@ public:
   /**
    * @brief Destruct future
    *
-   * If the future contins a coroutine handle on destruction, then cancel is
-   * called on the associated context.
+   * Destroys the stored value, if any (a no-op the compiler elides entirely
+   * for trivially-destructible T). future_base's destructor then runs
+   * automatically, handling the exception_ptr and cancel-on-drop cases -
+   * unchanged from today, and shared across every future<T>.
    */
   constexpr ~future()
   {
-    if (std::holds_alternative<handle_type>(m_state)) {
-      auto handle = std::get<handle_type>(m_state);
-      full_handle_type::from_address(handle.address())
-        .promise()
-        .get_context()
-        .cancel();
+    if constexpr (!std::is_void_v<T>) {
+      if (m_tag == state_tag::value) {
+        m_storage.value.~T();
+      }
     }
-  }
-
-  constexpr bool is_cancelled()
-  {
-    return std::holds_alternative<cancelled_state>(m_state);
-  }
-
-  constexpr void resume() const
-  {
-    if (std::holds_alternative<handle_type>(m_state)) {
-      auto handle = std::get<handle_type>(m_state);
-      full_handle_type::from_address(handle.address())
-        .promise()
-        .get_context()
-        .resume();
-    }
-
-    if (std::holds_alternative<std::exception_ptr>(m_state)) {
-      std::rethrow_exception(std::get<std::exception_ptr>(m_state));
-    }
-  }
-
-  /**
-   * @brief Reports if this async object has finished its operation and now
-   * contains a value.
-   *
-   * @return true - this operation is finished and either contains the value of
-   * type T, an exception_ptr, or this future is in a cancelled state.
-   * @return false - operation has yet to completed and does have a value.
-   *
-   * @note A future is considered "done" when it has either completed
-   * successfully, encountered an exception, or been cancelled. This method can
-   * be used to check if it's safe to extract the result or handle the
-   * completion state.
-   */
-  [[nodiscard]] constexpr bool done() const
-  {
-    return not std::holds_alternative<handle_type>(m_state);
-  }
-
-  void cancel()
-  {
-    if (done()) {
-      return;
-    }
-
-    auto handle = std::get<handle_type>(m_state);
-    full_handle_type::from_address(handle.address())
-      .promise()
-      .get_context()
-      .cancel();
-  }
-
-  /**
-   * @brief Returns true if this future contains a value
-   *
-   * @return true - future contains a value
-   * @return false - future does not contain a value
-   */
-  [[nodiscard]] constexpr bool has_value() const
-  {
-    return std::holds_alternative<monostate_or<T>>(m_state);
   }
 
   /**
    * @brief Extract value from async operation.
    *
    * @return Type - reference to the value from this async operation.
-   * @throws std::bad_variant_access if `has_value()` return false
    *
    * @note This method should only be called when `has_value()` returns true.
-   * Calling this method on a future that doesn't contain a value will throw
-   * std::bad_variant_access.
    */
   [[nodiscard]] constexpr monostate_or<T>& value()
     requires(not std::is_void_v<T>)
   {
-    return std::get<T>(m_state);
+    return m_storage.value;
   }
 
   // Awaiter for when this task is awaited
@@ -1779,89 +1895,40 @@ public:
 
     [[nodiscard]] constexpr bool await_ready() const noexcept
     {
-      return not std::holds_alternative<handle_type>(m_operation.m_state);
+      return m_operation.done();
     }
 
     /**
      * @brief Communicates to the awaiter to simply resume this coroutine
      * associated with this future.
      *
-     * @tparam U - return type of the promise
-     * @param p_calling_coroutine - this type is forgotten. The parent calling
-     * coroutine's handle was captured when the future object was created via
-     * get_return_object().
+     * The whole body lives on future_base - it never needed to know either
+     * this future's T or the calling coroutine's promise type.
+     *
+     * @param p_calling_coroutine - the currently-suspending coroutine.
      * @return std::coroutine_handle<> - self to continue
      */
-    template<typename U>
     std::coroutine_handle<> await_suspend(
-      [[maybe_unused]] std::coroutine_handle<promise<U>>
-        p_calling_coroutine) noexcept
+      std::coroutine_handle<> p_calling_coroutine) noexcept
     {
-      auto handle = std::get<handle_type>(m_operation.m_state);
-      auto& calling_ctx = p_calling_coroutine.promise().get_context();
-      auto& awaited_ctx = full_handle_type::from_address(handle.address())
-                            .promise()
-                            .get_context();
-
-      if (&calling_ctx != &awaited_ctx) [[unlikely]] {
-        calling_ctx.m_awaited_context = &awaited_ctx;
-        awaited_ctx.m_awaiting_caller = &calling_ctx;
-      }
-
-      return handle;
+      return m_operation.suspend_impl(p_calling_coroutine);
     }
 
     [[nodiscard]] constexpr monostate_or<T>&& await_resume() const
       requires(not std::is_void_v<T>)
     {
-      if (std::holds_alternative<T>(m_operation.m_state)) [[likely]] {
-        return std::move(std::get<T>(m_operation.m_state));
-      } else if (std::holds_alternative<std::exception_ptr>(
-                   m_operation.m_state)) [[unlikely]] {
-        std::rethrow_exception(
-          std::get<std::exception_ptr>(m_operation.m_state));
-      } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
-        [[unlikely]] {
-        throw ::async::future<T>::cancelled{ &m_operation };
+      if (m_operation.m_tag == state_tag::value) [[likely]] {
+        return std::move(m_operation.m_storage.value);
       }
-
-      // In the event that this coroutine awaiting this awaitable has
-      // requested the result of this awaitable before it has finished, then:
-      //
-      // - If contracts are enabled, then contract violation handler is called.
-      // - Otherwise, std::terminate is called.
-#if defined(__cpp_contracts)
-      contract_assert(std::holds_alternative<handle_type>(m_operation.m_state));
-#else
-      std::terminate();
-#endif
+      m_operation.throw_failure();
     }
 
     constexpr void await_resume() const
       requires(std::is_void_v<T>)
     {
-      if (std::holds_alternative<std::monostate>(m_operation.m_state))
-        [[likely]] {
-        return;
-      } else if (std::holds_alternative<std::exception_ptr>(
-                   m_operation.m_state)) [[unlikely]] {
-        std::rethrow_exception(
-          std::get<std::exception_ptr>(m_operation.m_state));
-      } else if (std::holds_alternative<cancelled_state>(m_operation.m_state))
-        [[unlikely]] {
-        throw ::async::future<T>::cancelled{ &m_operation };
+      if (m_operation.m_tag != state_tag::value) [[unlikely]] {
+        m_operation.throw_failure();
       }
-
-      // In the event that this coroutine awaiting this awaitable has
-      // requested the result of this awaitable before it has finished, then:
-      //
-      // - If contracts are enabled, then contract violation handler is called.
-      // - Otherwise, std::terminate is called.
-#if defined(__cpp_contracts)
-      contract_assert(std::holds_alternative<handle_type>(m_operation.m_state));
-#else
-      std::terminate();
-#endif
     }
   };
 
@@ -1897,6 +1964,7 @@ public:
 
 private:
   friend promise_type;
+  friend struct promise_return_base<T>;
 
   /**
    * @brief Note that this is the only handle type that can be assigned to
@@ -1904,14 +1972,25 @@ private:
    *
    */
   explicit constexpr future(full_handle_type p_handle)
-    : m_state(p_handle)
+    : future_base(p_handle)
   {
     auto& promise = p_handle.promise();
-    promise.m_future_state = &m_state;
+    promise.m_owner = this;
     promise.m_cancel = &promise_type::cancel_promise;
   }
 
-  future_state<T> m_state{};
+  union value_storage
+  {
+    monostate_or<T> value;
+    constexpr value_storage() noexcept
+    {
+    }
+    constexpr ~value_storage() noexcept
+    {
+    }
+  };
+
+  value_storage m_storage;
 };
 
 /**
@@ -1926,6 +2005,67 @@ private:
  * for void-returning asynchronous operations.
  */
 export using task = future<void>;
+
+/**
+ * @brief Handle return value for non-void futures
+ *
+ * Defined out-of-line because it needs future<T> to be a complete type.
+ *
+ * @param p_value The value to return from the coroutine
+ */
+template<typename T>
+template<typename U>
+void promise_return_base<T>::return_value(U&& p_value) noexcept
+  requires std::is_constructible_v<T, U&&>
+{
+  // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): clang-tidy incorrectly
+  // assumes this pointer is uninitialized. The promise is constructed from
+  // the future returned by `get_return_object()`, which properly initializes
+  // this promise.
+  new (&m_owner->m_storage.value) T(std::forward<U>(p_value));
+  m_owner->m_tag = future<T>::state_tag::value;
+  // NOLINTEND(clang-analyzer-core.CallAndMessage)
+}
+
+/**
+ * @brief Handle return void for void futures
+ *
+ * Defined out-of-line because it needs future<void> to be a complete type.
+ */
+inline void promise_return_base<void>::return_void() noexcept
+{
+  // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
+  m_owner->m_tag = future<void>::state_tag::value;
+  // NOLINTEND(clang-analyzer-core.CallAndMessage)
+}
+
+/**
+ * @brief Handle unhandled exceptions in coroutines
+ *
+ * Defined out-of-line because it needs future<T> to be a complete type.
+ */
+template<typename T>
+void promise<T>::unhandled_exception() noexcept
+{
+  auto* owner = promise_return_base<T>::m_owner;
+  new (&owner->m_base.exception) std::exception_ptr(std::current_exception());
+  owner->m_tag = future<T>::state_tag::exception;
+}
+
+/**
+ * @brief Set future<T> object associated with this promise to the cancelled
+ * state.
+ *
+ * Defined out-of-line because it needs future<T> to be a complete type.
+ *
+ * @param p_self Pointer to the promise to cancel
+ */
+template<typename T>
+void promise<T>::cancel_promise(void* p_self)
+{
+  auto* self = static_cast<promise<T>*>(p_self);
+  self->m_owner->m_tag = future<T>::state_tag::cancelled;
+}
 
 /**
  * @brief Get the return object for this promise
