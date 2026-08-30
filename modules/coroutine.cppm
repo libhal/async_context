@@ -1495,11 +1495,29 @@ protected:
   /**
    * @brief Destruct future_base
    *
-   * If this future contains a coroutine handle on destruction, then cancel is
-   * called on the associated context. If it holds an exception, that
-   * exception_ptr is released.
+   * The common case (m_tag == state_tag::value) needs no cleanup at all, so
+   * this stays a tiny inline check. When this destructor call immediately
+   * follows an await_resume() success check on the same m_tag (the normal
+   * co_await pattern), the compiler can prove this branch is already false
+   * and elide the call entirely - the actual cleanup lives in destroy_slow(),
+   * out-of-line and shared by every future<T> in the program, same pattern
+   * as throw_failure() below.
    */
   ~future_base()
+  {
+    if (m_tag != state_tag::value) [[unlikely]] {
+      destroy_slow();
+    }
+  }
+
+  /**
+   * @brief The non-trivial part of ~future_base(): release a stored
+   * exception_ptr, or cancel a still-running coroutine.
+   *
+   * Kept out-of-line deliberately - this is the cold path, not worth
+   * inlining even though it currently has only one call site.
+   */
+  void destroy_slow()
   {
     if (m_tag == state_tag::exception) {
       m_base.exception.~exception_ptr();
@@ -1509,6 +1527,7 @@ protected:
         .get_context()
         .cancel();
     }
+    // m_tag == state_tag::cancelled: no storage, nothing to do.
   }
 
   /**
