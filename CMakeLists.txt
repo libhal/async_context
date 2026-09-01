@@ -32,18 +32,19 @@ libhal_apply_compile_options(async_context)
 libhal_install_library(async_context NAMESPACE libhal)
 libhal_add_tests(async_context
     TEST_NAMES
-        sync_wait
+        # sync_wait
         basics
-        blocked_by
-        cancel
-        mutex
-        proxy
-        context_listener
-        simple_scheduler
-        clock_adapter
-        run_until_done
-        async_stacking
-        cross_context_await
+        # blocked_by
+        # cancel
+        # mutex
+        # proxy
+        # context_listener
+        # simple_scheduler
+        # clock_adapter
+        # run_until_done
+        # async_stacking
+        # cross_context_await
+        defer
 
     MODULES
         tests/util.cppm

@@ -1045,6 +1045,8 @@ private:
 //
 // =============================================================================
 
+export class cleanup_base;
+
 /**
  * @brief The base promise class for coroutine operations
  *
@@ -1272,6 +1274,10 @@ public:
   }
 
 protected:
+  friend class cleanup_base;
+
+  template<class Promise>
+  friend struct final_awaiter;
   /**
    * @brief Type alias for cancellation function pointer
    *
@@ -1286,6 +1292,7 @@ protected:
   std::coroutine_handle<> m_continuation = context::noop_sentinel;
   class context* m_context = nullptr;
   cancellation_fn* m_cancel = nullptr;
+  cleanup_base* m_cleanup_linked_list = nullptr;
 };
 
 export template<typename T>
@@ -1614,22 +1621,7 @@ struct final_awaiter
    * originally).
    */
   constexpr std::coroutine_handle<> await_suspend(
-    std::coroutine_handle<Promise> p_completing_coroutine) noexcept
-  {
-    // The coroutine is now suspended at the final-suspend point.
-    // Lookup its continuation in the promise and resume it symmetrically.
-    //
-    // Rather than return control back to the application, we continue the
-    // caller function allowing it to yield when it reaches another suspend
-    // point. The idea is that prior to this being called, we were executing
-    // code and thus, when we resume the caller, we are still running code.
-    // Lets continue to run as much code until we reach an actual suspend
-    // point.
-    auto next_to_run = p_completing_coroutine.promise().pop_active_coroutine();
-    // Destroy promise at this point as there is no more use for it.
-    p_completing_coroutine.destroy();
-    return next_to_run;
-  }
+    std::coroutine_handle<Promise> p_completing_coroutine) noexcept;
 
   /**
    * @brief Handle resume after completion
@@ -2138,6 +2130,136 @@ void context::cancel()
   if (m_awaiting_caller != nullptr) {
     m_awaiting_caller->m_awaited_context = nullptr;
     m_awaiting_caller = nullptr;
+  }
+}
+
+class cleanup_base
+{
+public:
+  cleanup_base(promise_base* p_promise)
+    : m_promise(p_promise)
+  {
+#if defined(__cpp_contracts)
+    // It should never be possible to pass a null promise base to
+    // async::cleanup.
+    contract_assert(p_promise != nullptr);
+#endif
+    // Make the start end of the cleanup list our next cleanup, starts at
+    // nullptr
+    m_next_cleanup = m_promise->m_cleanup_linked_list;
+    // Make ourselves the start of the linked list
+    m_promise->m_cleanup_linked_list = this;
+  }
+
+  cleanup_base(cleanup_base const&) = delete;
+  cleanup_base& operator=(cleanup_base const&) = delete;
+  cleanup_base(cleanup_base&&) = delete;
+  cleanup_base& operator=(cleanup_base&&) = delete;
+
+  ~cleanup_base()
+  {
+#if defined(__cpp_contracts)
+    // This cleanup object was destroyed outside of its scope ordering,
+    // meaning it's destructor was called directly in some way that violates
+    // the ordering of the other cleanup objects within the same function."
+    contract_assert(m_promise->m_cleanup_linked_list == this);
+#endif
+    // Replace ourselves with our next cleanup
+    m_promise->m_cleanup_linked_list = m_next_cleanup;
+  }
+
+  void load_cleanup()
+  {
+    // m_next_cleanup is nullptr when it finishes
+    m_promise->m_cleanup_linked_list = m_next_cleanup;
+    m_future_storage = m_cleanup_function(*m_promise->m_context, this);
+  }
+
+private:
+  promise_base* m_promise = nullptr;
+  cleanup_base* m_next_cleanup = nullptr;
+
+protected:
+  using cleanup_factory_function = async::future<void>(async::context&, void*);
+  cleanup_factory_function* m_cleanup_function = nullptr;
+  future<void> m_future_storage;
+};
+
+template<class Callable>
+class cleanup_function : public cleanup_base
+{
+public:
+  cleanup_function(promise_base* p_promise, Callable&& p_callable)
+    : cleanup_base(p_promise)
+    , m_cleanup_function_object(std::move(p_callable))
+  {
+    m_cleanup_function = &cleanup_handler;
+  }
+
+  static async::future<void> cleanup_handler(async::context& p_context,
+                                             void* p_instance)
+  {
+    return static_cast<cleanup_function<Callable>*>(p_instance)
+      ->m_cleanup_function_object(p_context);
+  }
+
+private:
+  Callable m_cleanup_function_object;
+};
+
+export template<class Callable>
+class defer
+{
+public:
+  defer(Callable&& p_callable)
+    : m_callable(std::move(p_callable))
+  {
+  }
+
+  [[nodiscard]] constexpr bool await_ready() const noexcept
+  {
+    return false;
+  }
+
+  template<class T>
+  bool await_suspend(std::coroutine_handle<promise<T>> p_caller) noexcept
+  {
+    m_promise = &p_caller.promise();
+    return false;  // Tell caller/awaiter to continue their own execution
+  }
+
+  cleanup_function<Callable> await_resume()
+  {
+    return { m_promise, std::move(m_callable) };
+  }
+
+private:
+  Callable&& m_callable;
+  promise_base* m_promise = nullptr;
+};
+
+template<class Promise>
+constexpr std::coroutine_handle<> final_awaiter<Promise>::await_suspend(
+  std::coroutine_handle<Promise> p_completing_coroutine) noexcept
+{
+  auto& promise = p_completing_coroutine.promise();
+  if (promise.m_cleanup_linked_list) {
+    promise.m_cleanup_linked_list->load_cleanup();
+    return promise.m_context->active_handle();
+  } else {
+    // The coroutine is now suspended at the final-suspend point.
+    // Lookup its continuation in the promise and resume it symmetrically.
+    //
+    // Rather than return control back to the application, we continue the
+    // caller function allowing it to yield when it reaches another suspend
+    // point. The idea is that prior to this being called, we were executing
+    // code and thus, when we resume the caller, we are still running code.
+    // Lets continue to run as much code until we reach an actual suspend
+    // point.
+    auto next_to_run = promise.pop_active_coroutine();
+    // Destroy promise at this point as there is no more use for it.
+    p_completing_coroutine.destroy();
+    return next_to_run;
   }
 }
 }  // namespace async::inline v0
