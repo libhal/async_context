@@ -1045,6 +1045,22 @@ private:
 //
 // =============================================================================
 
+// Forward declaration - promise_base stores a future_base* (m_owner) so that
+// cancel()/unhandled_exception() can be shared, non-template functions
+// instead of being re-instantiated per future<T>. Only the pointer type is
+// needed here; the bodies that dereference it are defined out-of-line below,
+// after future_base is complete.
+export class future_base;
+
+// Forward declaration - promise_return_base<T>::return_value()/return_void()
+// reach promise_base::m_owner (via a static_cast through promise<T>, their
+// only ever enclosing type) rather than keeping a second, redundant
+// future<T>*-typed copy of the same pointer. Needs a friend declaration
+// here since promise_return_base<T> is a sibling base of promise_base
+// (both are direct bases of promise<T>), not a derived class of it.
+export template<typename T>
+struct promise_return_base;
+
 /**
  * @brief The base promise class for coroutine operations
  *
@@ -1058,6 +1074,8 @@ class promise_base
 {
 public:
   friend class context;
+  template<typename T>
+  friend struct promise_return_base;
 
   // For regular functions
   template<typename... Args>
@@ -1259,33 +1277,38 @@ public:
    * @brief Cancel this coroutine operation
    *
    * This method cancels the current coroutine operation by setting its state
-   * to cancelled and cleaning up resources.
+   * to cancelled and cleaning up resources. Defined out-of-line because it
+   * needs future_base to be a complete type.
    */
-  void cancel()
-  {
-    // Set future state to cancelled
-    m_cancel(this);
-    // Pop self off context stack
-    pop_active_coroutine();
-    // Destroy promise objects & deallocate memory
-    std::coroutine_handle<promise_base>::from_promise(*this).destroy();
-  }
+  void cancel();
+
+  /**
+   * @brief Handle unhandled exceptions in coroutines
+   *
+   * This method is called when a coroutine throws an exception that isn't
+   * handled within the coroutine itself. Only ever touches future_base's
+   * fields, never T, so this is one shared function for every promise<T>
+   * instead of being re-instantiated per T. Defined out-of-line because it
+   * needs future_base to be a complete type.
+   */
+  void unhandled_exception() noexcept;
 
 protected:
-  /**
-   * @brief Type alias for cancellation function pointer
-   *
-   * This type represents the function signature used for cancellation
-   * callbacks.
-   */
-  using cancellation_fn = void(void*);
-
   // Consider m_continuation as the return address of the coroutine. The
   // coroutine handle for the coroutine that called and awaited the future that
   // generated this promise is stored here.
   std::coroutine_handle<> m_continuation = context::noop_sentinel;
   class context* m_context = nullptr;
-  cancellation_fn* m_cancel = nullptr;
+
+  // The future_base that owns this promise's result, set at future<T>
+  // construction (and re-set on future<T> move). Typed as future_base* -
+  // rather than future<T>* - so that cancel() and unhandled_exception()
+  // above can be non-template: both only ever touch m_tag/m_base, which
+  // live on future_base regardless of T. promise_return_base<T>'s
+  // return_value()/return_void() also reach through this same pointer
+  // (downcasting to future<T>*, via the friend declaration above) rather
+  // than keeping a second, redundant copy of it.
+  future_base* m_owner = nullptr;
 };
 
 export template<typename T>
@@ -1324,6 +1347,11 @@ struct busy_state
 export class future_base
 {
 public:
+  // promise_base stores a future_base* (m_owner) and reaches into m_tag /
+  // m_base / state_tag directly from its (non-template, shared)
+  // cancel()/unhandled_exception() - see promise_base's declarations.
+  friend class promise_base;
+
   using handle_type = std::coroutine_handle<>;
 
   /**
@@ -1663,12 +1691,6 @@ struct promise_return_base
   template<typename U>
   void return_value(U&& p_value) noexcept
     requires std::is_constructible_v<T, U&&>;
-
-  /**
-   * @brief Pointer to the future<T> that owns this promise's result, set at
-   * future<T> construction.
-   */
-  future<T>* m_owner = nullptr;
 };
 
 /**
@@ -1685,12 +1707,6 @@ struct promise_return_base<void>
    * Defined out-of-line after future<void> is complete.
    */
   void return_void() noexcept;
-
-  /**
-   * @brief Pointer to the future<void> that owns this promise's result, set
-   * at future<void> construction.
-   */
-  future<void>* m_owner = nullptr;
 };
 
 /**
@@ -1725,28 +1741,9 @@ public:
     return {};
   }
 
-  /**
-   * @brief Handle unhandled exceptions in coroutines
-   *
-   * This method is called when a coroutine throws an exception that isn't
-   * handled within the coroutine itself. Defined out-of-line after future<T>
-   * is complete.
-   */
-  void unhandled_exception() noexcept;
-
-  /**
-   * @brief Set future<T> object associated with this promise to the
-   * cancelled state.
-   *
-   * This static method is used to cancel a promise by setting its owning
-   * future's state to cancelled. The exact promise type information is type
-   * erased and saved into the promise_base such that the `context` class can
-   * safely cancel its future objects. Defined out-of-line after future<T> is
-   * complete.
-   *
-   * @param p_self Pointer to the promise to cancel
-   */
-  static void cancel_promise(void* p_self);
+  // unhandled_exception() and cancel() are inherited, unmodified, from
+  // promise_base - neither ever needed T, so there is no per-T override
+  // here anymore (see promise_base's declarations above).
 
   /**
    * @brief Get the return object for this promise
@@ -1993,9 +1990,7 @@ private:
   explicit constexpr future(full_handle_type p_handle)
     : future_base(p_handle)
   {
-    auto& promise = p_handle.promise();
-    promise.m_owner = this;
-    promise.m_cancel = &promise_type::cancel_promise;
+    p_handle.promise().m_owner = this;
   }
 
   union value_storage
@@ -2029,6 +2024,9 @@ export using task = future<void>;
  * @brief Handle return value for non-void futures
  *
  * Defined out-of-line because it needs future<T> to be a complete type.
+ * promise_return_base<T> is always used exclusively as a base of
+ * promise<T>, so the static_cast to reach promise_base::m_owner (rather
+ * than keeping a second, redundant future<T>*-typed copy of it) is safe.
  *
  * @param p_value The value to return from the coroutine
  */
@@ -2041,8 +2039,10 @@ void promise_return_base<T>::return_value(U&& p_value) noexcept
   // assumes this pointer is uninitialized. The promise is constructed from
   // the future returned by `get_return_object()`, which properly initializes
   // this promise.
-  new (&m_owner->m_storage.value) T(std::forward<U>(p_value));
-  m_owner->m_tag = future<T>::state_tag::value;
+  auto* owner =
+    static_cast<future<T>*>(static_cast<promise<T>*>(this)->m_owner);
+  new (&owner->m_storage.value) T(std::forward<U>(p_value));
+  owner->m_tag = future<T>::state_tag::value;
   // NOLINTEND(clang-analyzer-core.CallAndMessage)
 }
 
@@ -2050,40 +2050,51 @@ void promise_return_base<T>::return_value(U&& p_value) noexcept
  * @brief Handle return void for void futures
  *
  * Defined out-of-line because it needs future<void> to be a complete type.
+ * Same static_cast-through-promise<void> reasoning as return_value() above.
  */
 inline void promise_return_base<void>::return_void() noexcept
 {
   // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
-  m_owner->m_tag = future<void>::state_tag::value;
+  auto* owner =
+    static_cast<future<void>*>(static_cast<promise<void>*>(this)->m_owner);
+  owner->m_tag = future<void>::state_tag::value;
   // NOLINTEND(clang-analyzer-core.CallAndMessage)
 }
 
 /**
  * @brief Handle unhandled exceptions in coroutines
  *
- * Defined out-of-line because it needs future<T> to be a complete type.
+ * Only ever touches future_base's fields (m_tag, m_base.exception), never
+ * anything specific to a future<T>'s T, so this is one shared, non-template
+ * function for every promise<T> in the program - unlike before, when this
+ * lived on promise<T> and was re-instantiated per T. Defined out-of-line
+ * because it needs future_base to be a complete type.
  */
-template<typename T>
-void promise<T>::unhandled_exception() noexcept
+inline void promise_base::unhandled_exception() noexcept
 {
-  auto* owner = promise_return_base<T>::m_owner;
-  new (&owner->m_base.exception) std::exception_ptr(std::current_exception());
-  owner->m_tag = future<T>::state_tag::exception;
+  new (&m_owner->m_base.exception) std::exception_ptr(std::current_exception());
+  m_owner->m_tag = future_base::state_tag::exception;
 }
 
 /**
- * @brief Set future<T> object associated with this promise to the cancelled
- * state.
+ * @brief Cancel this coroutine operation
  *
- * Defined out-of-line because it needs future<T> to be a complete type.
- *
- * @param p_self Pointer to the promise to cancel
+ * Sets the owning future_base's state to cancelled, pops this coroutine off
+ * its context's active-handle stack, and destroys the coroutine frame. Only
+ * ever touches future_base's fields, so - like unhandled_exception() above -
+ * this is one shared, non-template function instead of being re-instantiated
+ * per future<T> via a per-T cancel_promise() and an m_cancel function
+ * pointer. Defined out-of-line because it needs future_base to be a
+ * complete type.
  */
-template<typename T>
-void promise<T>::cancel_promise(void* p_self)
+inline void promise_base::cancel()
 {
-  auto* self = static_cast<promise<T>*>(p_self);
-  self->m_owner->m_tag = future<T>::state_tag::cancelled;
+  // Set future state to cancelled
+  m_owner->m_tag = future_base::state_tag::cancelled;
+  // Pop self off context stack
+  pop_active_coroutine();
+  // Destroy promise objects & deallocate memory
+  std::coroutine_handle<promise_base>::from_promise(*this).destroy();
 }
 
 /**
