@@ -1052,6 +1052,15 @@ private:
 // after future_base is complete.
 export class future_base;
 
+// Forward declaration - promise_return_base<T>::return_value()/return_void()
+// reach promise_base::m_owner (via a static_cast through promise<T>, their
+// only ever enclosing type) rather than keeping a second, redundant
+// future<T>*-typed copy of the same pointer. Needs a friend declaration
+// here since promise_return_base<T> is a sibling base of promise_base
+// (both are direct bases of promise<T>), not a derived class of it.
+export template<typename T>
+struct promise_return_base;
+
 /**
  * @brief The base promise class for coroutine operations
  *
@@ -1065,6 +1074,8 @@ class promise_base
 {
 public:
   friend class context;
+  template<typename T>
+  friend struct promise_return_base;
 
   // For regular functions
   template<typename... Args>
@@ -1291,12 +1302,12 @@ protected:
 
   // The future_base that owns this promise's result, set at future<T>
   // construction (and re-set on future<T> move). Typed as future_base* -
-  // rather than future<T>* - specifically so cancel() and
-  // unhandled_exception() above can be non-template: both only ever touch
-  // m_tag/m_base, which live on future_base regardless of T. This is a
-  // separate field from promise_return_base<T>::m_owner below, which stays
-  // future<T>*-typed because return_value()/return_void() write into
-  // future<T>'s own m_storage, not anything future_base has.
+  // rather than future<T>* - so that cancel() and unhandled_exception()
+  // above can be non-template: both only ever touch m_tag/m_base, which
+  // live on future_base regardless of T. promise_return_base<T>'s
+  // return_value()/return_void() also reach through this same pointer
+  // (downcasting to future<T>*, via the friend declaration above) rather
+  // than keeping a second, redundant copy of it.
   future_base* m_owner = nullptr;
 };
 
@@ -1680,12 +1691,6 @@ struct promise_return_base
   template<typename U>
   void return_value(U&& p_value) noexcept
     requires std::is_constructible_v<T, U&&>;
-
-  /**
-   * @brief Pointer to the future<T> that owns this promise's result, set at
-   * future<T> construction.
-   */
-  future<T>* m_owner = nullptr;
 };
 
 /**
@@ -1702,12 +1707,6 @@ struct promise_return_base<void>
    * Defined out-of-line after future<void> is complete.
    */
   void return_void() noexcept;
-
-  /**
-   * @brief Pointer to the future<void> that owns this promise's result, set
-   * at future<void> construction.
-   */
-  future<void>* m_owner = nullptr;
 };
 
 /**
@@ -1828,10 +1827,9 @@ public:
       }
     }
     if (m_tag == state_tag::running) {
-      auto& promise =
-        full_handle_type::from_address(m_base.handle.address()).promise();
-      promise.promise_base::m_owner = this;
-      promise.promise_return_base<T>::m_owner = this;
+      full_handle_type::from_address(m_base.handle.address())
+        .promise()
+        .m_owner = this;
     }
   }
 
@@ -1863,10 +1861,9 @@ public:
         }
       }
       if (m_tag == state_tag::running) {
-        auto& promise =
-          full_handle_type::from_address(m_base.handle.address()).promise();
-        promise.promise_base::m_owner = this;
-        promise.promise_return_base<T>::m_owner = this;
+        full_handle_type::from_address(m_base.handle.address())
+          .promise()
+          .m_owner = this;
       }
     }
     return *this;
@@ -1993,9 +1990,7 @@ private:
   explicit constexpr future(full_handle_type p_handle)
     : future_base(p_handle)
   {
-    auto& promise = p_handle.promise();
-    promise.promise_base::m_owner = this;
-    promise.promise_return_base<T>::m_owner = this;
+    p_handle.promise().m_owner = this;
   }
 
   union value_storage
@@ -2029,6 +2024,9 @@ export using task = future<void>;
  * @brief Handle return value for non-void futures
  *
  * Defined out-of-line because it needs future<T> to be a complete type.
+ * promise_return_base<T> is always used exclusively as a base of
+ * promise<T>, so the static_cast to reach promise_base::m_owner (rather
+ * than keeping a second, redundant future<T>*-typed copy of it) is safe.
  *
  * @param p_value The value to return from the coroutine
  */
@@ -2041,8 +2039,10 @@ void promise_return_base<T>::return_value(U&& p_value) noexcept
   // assumes this pointer is uninitialized. The promise is constructed from
   // the future returned by `get_return_object()`, which properly initializes
   // this promise.
-  new (&m_owner->m_storage.value) T(std::forward<U>(p_value));
-  m_owner->m_tag = future<T>::state_tag::value;
+  auto* owner =
+    static_cast<future<T>*>(static_cast<promise<T>*>(this)->m_owner);
+  new (&owner->m_storage.value) T(std::forward<U>(p_value));
+  owner->m_tag = future<T>::state_tag::value;
   // NOLINTEND(clang-analyzer-core.CallAndMessage)
 }
 
@@ -2050,11 +2050,14 @@ void promise_return_base<T>::return_value(U&& p_value) noexcept
  * @brief Handle return void for void futures
  *
  * Defined out-of-line because it needs future<void> to be a complete type.
+ * Same static_cast-through-promise<void> reasoning as return_value() above.
  */
 inline void promise_return_base<void>::return_void() noexcept
 {
   // NOLINTBEGIN(clang-analyzer-core.CallAndMessage)
-  m_owner->m_tag = future<void>::state_tag::value;
+  auto* owner =
+    static_cast<future<void>*>(static_cast<promise<void>*>(this)->m_owner);
+  owner->m_tag = future<void>::state_tag::value;
   // NOLINTEND(clang-analyzer-core.CallAndMessage)
 }
 
